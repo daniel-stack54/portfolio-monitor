@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Portfolio Monitor v3.0</title>
+  <style>
+    :root {
+      --bg:     #0d1117;
+      --bg2:    #161b22;
+      --bg3:    #21262d;
+      --border: #30363d;
+      --text:   #c9d1d9;
+      --dim:    #8b949e;
+      --accent: #58a6ff;
+      --green:  #3fb950;
+      --red:    #f85149;
+      --yellow: #d29922;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      font-size: 13px;
+    }
+
+    /* ── HEADER ──────────────────────────────────────────────────────────── */
+    .header {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 20px 10px;
+    }
+
+    .h-top {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .app-title {
+      flex: 1;
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: .3px;
+    }
+
+    .meta { font-size: 11px; color: var(--dim); }
+
+    .btn {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 5px 13px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      font-family: inherit;
+      transition: background .15s;
+    }
+    .btn:hover    { background: #2d333b; }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+    /* SPX bar */
+    .spx-bar {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 18px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 7px 14px;
+      margin-bottom: 10px;
+    }
+
+    .spx-item  { display: flex; align-items: center; gap: 6px; }
+    .spx-lbl   { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim); }
+    .spx-val   { font-weight: 600; font-variant-numeric: tabular-nums; }
+    .spx-badge {
+      padding: 2px 9px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .3px;
+    }
+
+    /* Signal counters */
+    .counters { display: flex; flex-wrap: wrap; gap: 6px; }
+
+    .cpill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .cpill .n { font-size: 13px; font-weight: 800; }
+
+    /* ── TABLE ───────────────────────────────────────────────────────────── */
+    .wrap {
+      padding: 16px 20px 48px;
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 960px;
+    }
+
+    thead th {
+      background: var(--bg2);
+      color: var(--dim);
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .9px;
+      padding: 8px 10px;
+      text-align: left;
+      border-bottom: 2px solid var(--border);
+      white-space: nowrap;
+    }
+    thead th.r { text-align: right; }
+
+    tbody tr:nth-child(even) td { background: var(--bg2); }
+    tbody tr:hover td           { background: var(--bg3) !important; }
+
+    td {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+      vertical-align: middle;
+    }
+    td.r { text-align: right; font-variant-numeric: tabular-nums; }
+
+    .tk  { font-weight: 700; color: var(--accent); font-size: 13px; }
+    .emp { color: var(--text); max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
+
+    .pos { color: var(--green); }
+    .neg { color: var(--red); }
+    .neu { color: var(--dim); }
+    .prt { color: var(--yellow); font-weight: 600; }
+
+    .chip {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .4px;
+      white-space: nowrap;
+    }
+
+    .alerts { font-size: 15px; letter-spacing: 2px; }
+    .rat    { font-weight: 600; font-size: 12px; }
+
+    tfoot td {
+      font-weight: 700;
+      background: var(--bg2) !important;
+      border-top: 2px solid var(--border);
+      font-size: 12px;
+      padding: 9px 10px;
+    }
+
+    /* ── LOADING ─────────────────────────────────────────────────────────── */
+    .overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(13,17,23,.9);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 200;
+      gap: 14px;
+    }
+    .overlay.off { display: none; }
+
+    .spinner {
+      width: 38px; height: 38px;
+      border: 3px solid var(--bg3);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .load-msg { color: var(--dim); font-size: 13px; text-align: center; }
+
+    .err-banner {
+      margin: 12px 20px 0;
+      padding: 10px 14px;
+      background: #2d1616;
+      border: 1px solid var(--red);
+      border-radius: 6px;
+      color: var(--red);
+      font-size: 12px;
+    }
+    .err-banner.off { display: none; }
+  </style>
+</head>
+<body>
+
+<!-- Loading overlay -->
+<div class="overlay" id="ov">
+  <div class="spinner"></div>
+  <div class="load-msg">Cargando portfolio&hellip;<br><small style="color:#6e7681">Primera carga: ~30 segundos</small></div>
+</div>
+
+<!-- Header -->
+<div class="header">
+  <div class="h-top">
+    <span class="app-title">📊 PORTFOLIO MONITOR v3.0</span>
+    <span class="meta" id="tsLabel">—</span>
+    <span class="meta" id="cdLabel"></span>
+    <button class="btn" id="btnR" onclick="manualRefresh()">🔄 Actualizar</button>
+  </div>
+
+  <div class="spx-bar" id="spxBar">
+    <div class="spx-item">
+      <span class="spx-lbl">SPX</span>
+      <span class="spx-val" id="spxP">—</span>
+    </div>
+    <div class="spx-item">
+      <span class="spx-lbl">EMA20</span>
+      <span class="spx-val" id="spxE">—</span>
+    </div>
+    <div class="spx-item">
+      <span class="spx-lbl">Dist.</span>
+      <span class="spx-val" id="spxD">—</span>
+    </div>
+    <div class="spx-item">
+      <span class="spx-badge" id="spxS">—</span>
+    </div>
+    <span style="margin-left:auto;font-size:11px;color:var(--dim)">S&amp;P 500</span>
+  </div>
+
+  <div class="counters" id="counters"></div>
+</div>
+
+<div class="err-banner off" id="errBanner"></div>
+
+<!-- Table -->
+<div class="wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Ticker</th>
+        <th>Empresa</th>
+        <th class="r">% Port.</th>
+        <th class="r">Entrada</th>
+        <th class="r">Precio</th>
+        <th class="r">P&amp;L%</th>
+        <th class="r">Hoy%</th>
+        <th>Earnings</th>
+        <th>Rating</th>
+        <th>Alertas</th>
+        <th>Señal</th>
+      </tr>
+    </thead>
+    <tbody id="tb">
+      <tr><td colspan="11" style="text-align:center;padding:48px;color:var(--dim)">Cargando datos…</td></tr>
+    </tbody>
+    <tfoot id="tf"></tfoot>
+  </table>
+</div>
+
+<script>
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const SIG_COLOR = {
+  COMPRA_FUERTE:    { bg: '#16a34a', tx: '#fff' },
+  COMPRA:           { bg: '#22c55e', tx: '#fff' },
+  COMPRA_PARCIAL:   { bg: '#4ade80', tx: '#14532d' },
+  VIGILAR_PULLBACK: { bg: '#ca8a04', tx: '#fff' },
+  VIGILAR_REBOTE:   { bg: '#ea580c', tx: '#fff' },
+  MANTENER:         { bg: '#3b82f6', tx: '#fff' },
+  VENDER:           { bg: '#dc2626', tx: '#fff' },
+  SIN_DATOS:        { bg: '#374151', tx: '#9ca3af' }
+};
+
+const SPX_COL = {
+  FAVORABLE:         '#22c55e',
+  EXTENDIDO_LEVE:    '#d29922',
+  EXTENDIDO:         '#ea580c',
+  CORRECCION_LEVE:   '#fbbf24',
+  CORRECCION_FUERTE: '#dc2626',
+  DESCONOCIDO:       '#6b7280'
+};
+
+const RAT_COL = {
+  'Strong Buy': '#22c55e',
+  'Buy':        '#3fb950',
+  'Hold':       '#d29922',
+  'Sell':       '#ea580c',
+  'Strong Sell':'#f85149'
+};
+
+const SIG_ORDER = [
+  'COMPRA_FUERTE','COMPRA','COMPRA_PARCIAL',
+  'VIGILAR_PULLBACK','VIGILAR_REBOTE','MANTENER','VENDER','SIN_DATOS'
+];
+
+// ── Formatting ────────────────────────────────────────────────────────────────
+
+const f2 = n =>
+  (n == null || !isFinite(n)) ? '—' : n.toFixed(2);
+
+const fp = n =>
+  (n == null || !isFinite(n)) ? '—'
+    : '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+const fpct = n =>
+  (n == null || !isFinite(n)) ? '—'
+    : (n > 0 ? '+' : '') + n.toFixed(2) + '%';
+
+const pClass = n => n > 0.05 ? 'pos' : n < -0.05 ? 'neg' : 'neu';
+
+const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+// ── Render SPX ────────────────────────────────────────────────────────────────
+
+function renderSPX(spx) {
+  if (!spx) { document.getElementById('spxP').textContent = 'N/D'; return; }
+
+  document.getElementById('spxP').textContent =
+    spx.precio?.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) ?? '—';
+
+  if (spx.ema20 != null) {
+    document.getElementById('spxE').textContent = spx.ema20.toFixed(2);
+
+    const distEl = document.getElementById('spxD');
+    const dist   = spx.dist ?? 0;
+    distEl.textContent = (dist > 0 ? '+' : '') + dist.toFixed(2) + '%';
+    distEl.className   = 'spx-val ' + pClass(dist);
+
+    const col   = SPX_COL[spx.estado] || SPX_COL.DESCONOCIDO;
+    const badge = document.getElementById('spxS');
+    badge.textContent      = (spx.estado || '—').replace(/_/g, ' ');
+    badge.style.background = col + '22';
+    badge.style.color      = col;
+    badge.style.border     = `1px solid ${col}55`;
+  }
+}
+
+// ── Render counters ───────────────────────────────────────────────────────────
+
+function renderCounters(cnt) {
+  const div = document.getElementById('counters');
+  div.innerHTML = '';
+  SIG_ORDER.forEach(s => {
+    const n = cnt[s]; if (!n) return;
+    const c = SIG_COLOR[s]?.bg || '#6b7280';
+    const p = document.createElement('div');
+    p.className = 'cpill';
+    p.style.cssText = `background:${c}22;border:1px solid ${c}55;color:${c}`;
+    p.innerHTML = `<span class="n">${n}</span><span>${s.replace(/_/g,' ')}</span>`;
+    div.appendChild(p);
+  });
+}
+
+// ── Render table ──────────────────────────────────────────────────────────────
+
+function renderTable(portfolio) {
+  const tb = document.getElementById('tb');
+  tb.innerHTML = '';
+
+  let totalValor = 0, totalEntrada = 0;
+
+  portfolio.forEach(p => {
+    totalValor   += p.valorActual  || 0;
+    totalEntrada += p.valorEntrada || 0;
+
+    const sc = SIG_COLOR[p.senal] || SIG_COLOR.SIN_DATOS;
+
+    const alertsHtml = p.alertas?.length
+      ? p.alertas.map(a => `<span title="${esc(a.mensaje)}">${a.icono}</span>`).join('')
+      : '<span style="color:var(--dim)">—</span>';
+
+    const ratCol = RAT_COL[p.rating] || 'var(--dim)';
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="tk">${esc(p.ticker)}</td>
+      <td class="emp" title="${esc(p.empresa)}">${esc(p.empresa)}</td>
+      <td class="r prt">${f2(p.pesoPct)}%</td>
+      <td class="r">${fp(p.entrada)}</td>
+      <td class="r">${fp(p.precioActual)}</td>
+      <td class="r ${pClass(p.plPct)}">${fpct(p.plPct)}</td>
+      <td class="r ${pClass(p.hoyPct)}">${fpct(p.hoyPct)}</td>
+      <td>${esc(p.earnings || '—')}</td>
+      <td><span class="rat" style="color:${ratCol}">${esc(p.rating || '—')}</span></td>
+      <td class="alerts">${alertsHtml}</td>
+      <td>
+        <span class="chip" style="background:${sc.bg};color:${sc.tx}">
+          ${esc((p.senal || 'SIN DATOS').replace(/_/g,' '))}
+        </span>
+      </td>
+    `;
+    tb.appendChild(tr);
+  });
+
+  // Summary footer
+  const plGlobal = totalEntrada > 0 ? ((totalValor / totalEntrada) - 1) * 100 : 0;
+  document.getElementById('tf').innerHTML = `
+    <tr>
+      <td colspan="2">TOTAL PORTFOLIO (${portfolio.length} posiciones)</td>
+      <td class="r">100.00%</td>
+      <td class="r"></td>
+      <td class="r"></td>
+      <td class="r ${pClass(plGlobal)}">${fpct(plGlobal)}</td>
+      <td colspan="5"></td>
+    </tr>
+  `;
+}
+
+// ── Data loading ──────────────────────────────────────────────────────────────
+
+let countdown = 180;
+
+async function loadData(force = false) {
+  document.getElementById('ov').classList.remove('off');
+  document.getElementById('errBanner').classList.add('off');
+
+  try {
+    const res  = await fetch(force ? '/api/refresh' : '/api/portfolio');
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+    const data = await res.json();
+
+    renderSPX(data.spx);
+    renderCounters(data.contadores || {});
+    renderTable(data.portfolio || []);
+
+    const ts = new Date(data.timestamp);
+    document.getElementById('tsLabel').textContent =
+      'Actualizado ' + ts.toLocaleTimeString('es-ES');
+    countdown = 180;
+  } catch (e) {
+    const b = document.getElementById('errBanner');
+    b.textContent = '⚠ ' + e.message;
+    b.classList.remove('off');
+  } finally {
+    document.getElementById('ov').classList.add('off');
+  }
+}
+
+function manualRefresh() {
+  const b = document.getElementById('btnR');
+  b.disabled = true;
+  b.textContent = '⏳ Cargando…';
+  loadData(true).finally(() => {
+    b.disabled = false;
+    b.textContent = '🔄 Actualizar';
+  });
+}
+
+// Auto-refresh countdown
+setInterval(() => {
+  if (--countdown <= 0) { countdown = 180; loadData(false); }
+  const m = Math.floor(countdown / 60);
+  const s = String(countdown % 60).padStart(2, '0');
+  document.getElementById('cdLabel').textContent = `auto ${m}:${s}`;
+}, 1000);
+
+// Initial load
+loadData(false);
+</script>
+</body>
+</html>

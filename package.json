@@ -1,0 +1,14 @@
+{
+  "name": "portfolio-monitor",
+  "version": "3.0.0",
+  "description": "Portfolio Monitor — Motor de señales v3.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node testScoring.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "yahoo-finance2": "^2.11.3"
+  }
+}
