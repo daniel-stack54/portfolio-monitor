@@ -1,0 +1,9 @@
+node_modules/
+.env
+*.log
+diag.json
+*.json.tmp
+tmp*.json
+electron/debug.js
+electron/probe*.js
+electron/preload.js

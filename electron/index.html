@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Portfolio Monitor</title>
+<style>
+  :root {
+    --bg:    #0d0d0d;
+    --bg2:   #141414;
+    --bg3:   #1c1c1c;
+    --bdr:   #272727;
+    --green: #00e676;
+    --green2:#00c853;
+    --green3:#69f0ae;
+    --red:   #ff1744;
+    --yel:   #ffd600;
+    --org:   #ff6d00;
+    --blue:  #2979ff;
+    --dim:   #555;
+    --txt:   #e0e0e0;
+    --txt2:  #999;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--txt); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* ── Titlebar ── */
+  #titlebar { height: 36px; background: var(--bg2); border-bottom: 1px solid var(--bdr); display: flex; align-items: center; gap: 12px; padding: 0 16px; -webkit-app-region: drag; flex-shrink: 0; }
+  #titlebar h1 { font-size: 12px; font-weight: 700; color: var(--green); letter-spacing: 1.5px; }
+  #dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); flex-shrink: 0; }
+  #dot.ok { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  #lastUpd { font-size: 10px; color: var(--dim); margin-left: auto; -webkit-app-region: no-drag; }
+  #titlebar button { -webkit-app-region: no-drag; background: transparent; border: 1px solid var(--bdr); color: var(--txt2); padding: 2px 10px; border-radius: 3px; cursor: pointer; font-size: 11px; }
+  #titlebar button:hover { border-color: var(--green); color: var(--green); }
+  #btnAdd { border-color: var(--green) !important; color: var(--green) !important; }
+
+  /* ── Barra SPX + Contadores ── */
+  #infobar { height: 32px; background: var(--bg2); border-bottom: 1px solid var(--bdr); display: flex; align-items: center; gap: 0; padding: 0; flex-shrink: 0; font-size: 11px; overflow: hidden; }
+  .spx-block { padding: 0 16px; border-right: 1px solid var(--bdr); display: flex; align-items: center; gap: 8px; height: 100%; }
+  .spx-label { color: var(--dim); font-size: 10px; }
+  .spx-val   { font-weight: 600; }
+  .spx-dist  { font-size: 10px; }
+  .spx-estado { font-size: 9px; padding: 1px 5px; border-radius: 3px; font-weight: 700; }
+  .FAVORABLE       { background: rgba(0,230,118,.15); color: var(--green); }
+  .EXTENDIDO_LEVE  { background: rgba(255,214,0,.1);  color: var(--yel); }
+  .EXTENDIDO       { background: rgba(255,109,0,.1);  color: var(--org); }
+  .CORRECCION_LEVE { background: rgba(255,23,68,.1);  color: var(--red); }
+  .CORRECCION_FUERTE{ background: rgba(255,23,68,.2); color: var(--red); }
+  .DESCONOCIDO     { background: rgba(80,80,80,.15);  color: var(--dim); }
+
+  .counters { display: flex; align-items: center; gap: 0; margin-left: 8px; height: 100%; }
+  .cnt { padding: 0 10px; display: flex; align-items: center; gap: 4px; height: 100%; border-right: 1px solid var(--bdr); cursor: default; }
+  .cnt-n { font-weight: 700; font-size: 13px; }
+  .cnt-lbl { font-size: 9px; color: var(--dim); }
+  .cnt.cf   .cnt-n { color: var(--green); }
+  .cnt.c    .cnt-n { color: var(--green2); }
+  .cnt.cp   .cnt-n { color: var(--green3); }
+  .cnt.vp   .cnt-n { color: var(--yel); }
+  .cnt.vr   .cnt-n { color: var(--org); }
+  .cnt.man  .cnt-n { color: var(--blue); }
+  .cnt.ven  .cnt-n { color: var(--red); }
+
+  /* ── Layout principal ── */
+  main { flex: 1; overflow: auto; }
+
+  /* ── Tabla ── */
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  thead th {
+    background: var(--bg2); color: var(--dim); font-weight: 600; font-size: 10px;
+    letter-spacing: .6px; padding: 8px 10px; text-align: right;
+    position: sticky; top: 0; z-index: 2; white-space: nowrap;
+    border-bottom: 2px solid var(--bdr);
+  }
+  thead th:first-child, thead th:nth-child(2) { text-align: left; }
+  tbody tr { border-bottom: 1px solid var(--bdr); cursor: pointer; transition: background .1s; }
+  tbody tr:hover { background: var(--bg3); }
+  td { padding: 7px 10px; text-align: right; white-space: nowrap; vertical-align: middle; }
+  td:first-child, td:nth-child(2) { text-align: left; }
+
+  .sym    { font-weight: 700; font-size: 13px; color: var(--txt); }
+  .emp    { font-size: 10px; color: var(--dim); margin-top: 1px; max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
+  .num    { font-variant-numeric: tabular-nums; }
+  .pos    { color: var(--green); }
+  .neg    { color: var(--red); }
+  .neu    { color: var(--txt2); }
+
+  /* Badges señal */
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: 800; letter-spacing: .3px; white-space: nowrap; }
+  .COMPRA_FUERTE    { background: rgba(0,230,118,.18); color: #00e676; border: 1px solid rgba(0,230,118,.4); }
+  .COMPRA           { background: rgba(0,200,83,.13);  color: #00c853; border: 1px solid rgba(0,200,83,.3); }
+  .COMPRA_PARCIAL   { background: rgba(105,240,174,.1);color: #69f0ae; border: 1px solid rgba(105,240,174,.25); }
+  .VIGILAR_PULLBACK { background: rgba(255,214,0,.12); color: #ffd600; border: 1px solid rgba(255,214,0,.3); }
+  .VIGILAR_REBOTE   { background: rgba(255,109,0,.12); color: #ff6d00; border: 1px solid rgba(255,109,0,.3); }
+  .MANTENER         { background: rgba(41,121,255,.1); color: #2979ff; border: 1px solid rgba(41,121,255,.25); }
+  .VENDER           { background: rgba(255,23,68,.15); color: #ff1744; border: 1px solid rgba(255,23,68,.35); }
+  .SIN_DATOS        { background: rgba(80,80,80,.1);   color: var(--dim); border: 1px solid var(--bdr); }
+
+  .alerts-icons { font-size: 13px; letter-spacing: 2px; }
+
+  #noData { padding: 60px; text-align: center; color: var(--dim); font-size: 14px; }
+
+  /* ── Modal ── */
+  .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.8); z-index: 100; align-items: center; justify-content: center; }
+  .overlay.show { display: flex; }
+  .modal { background: var(--bg2); border: 1px solid var(--bdr); border-radius: 6px; padding: 22px; width: 320px; }
+  .modal h2 { font-size: 13px; margin-bottom: 14px; color: var(--green); }
+  .modal label { font-size: 10px; color: var(--dim); display: block; margin-bottom: 3px; }
+  .modal input { width: 100%; background: var(--bg3); border: 1px solid var(--bdr); color: var(--txt); padding: 6px 9px; border-radius: 3px; font-size: 12px; margin-bottom: 9px; }
+  .modal input:focus { outline: none; border-color: var(--green); }
+  .mbtns { display: flex; gap: 8px; margin-top: 4px; }
+  .mbtns button { flex: 1; padding: 7px; border-radius: 3px; font-size: 12px; cursor: pointer; border: 1px solid var(--bdr); }
+  #btnOk  { background: var(--green); color: #000; font-weight: 800; border-color: var(--green); }
+  #btnCx  { background: transparent; color: var(--txt2); }
+
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--bdr); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<!-- Titlebar -->
+<div id="titlebar">
+  <div id="dot"></div>
+  <h1>PORTFOLIO MONITOR</h1>
+  <button id="btnAdd" onclick="openModal()">+ Añadir</button>
+  <span id="lastUpd"></span>
+</div>
+
+<!-- SPX + Contadores -->
+<div id="infobar">
+  <div class="spx-block">
+    <span class="spx-label">SPX</span>
+    <span class="spx-val" id="spxPrecio">—</span>
+    <span class="spx-dist" id="spxDist"></span>
+    <span class="spx-estado DESCONOCIDO" id="spxEstado">—</span>
+  </div>
+  <div class="counters">
+    <div class="cnt cf" title="COMPRA FUERTE"><span class="cnt-n" id="cCF">0</span><span class="cnt-lbl">COMP.FUERTE</span></div>
+    <div class="cnt c"  title="COMPRA">       <span class="cnt-n" id="cC">0</span> <span class="cnt-lbl">COMPRA</span></div>
+    <div class="cnt cp" title="COMPRA PARCIAL"><span class="cnt-n" id="cCP">0</span><span class="cnt-lbl">PARCIAL</span></div>
+    <div class="cnt vp" title="VIGILAR PULLBACK"><span class="cnt-n" id="cVP">0</span><span class="cnt-lbl">VIG.PULL</span></div>
+    <div class="cnt vr" title="VIGILAR REBOTE"><span class="cnt-n" id="cVR">0</span><span class="cnt-lbl">VIG.REBOTE</span></div>
+    <div class="cnt man" title="MANTENER">    <span class="cnt-n" id="cM">0</span> <span class="cnt-lbl">MANTENER</span></div>
+    <div class="cnt ven" title="VENDER">      <span class="cnt-n" id="cV">0</span> <span class="cnt-lbl">VENDER</span></div>
+  </div>
+</div>
+
+<!-- Tabla -->
+<main>
+  <div id="noData">Cargando portfolio...</div>
+  <table id="tbl" style="display:none">
+    <thead>
+      <tr>
+        <th>TICKER</th>
+        <th>EMPRESA</th>
+        <th>% PORT.</th>
+        <th>ENTRADA</th>
+        <th>PRECIO</th>
+        <th>P&amp;L%</th>
+        <th>HOY%</th>
+        <th>EARNINGS</th>
+        <th>RATING</th>
+        <th>ALERTAS</th>
+        <th>SEÑAL</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+</main>
+
+<!-- Modal añadir -->
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <h2>Añadir acción</h2>
+    <label>Símbolo</label>
+    <input id="iSym" placeholder="AAPL" style="text-transform:uppercase"/>
+    <label>Empresa</label>
+    <input id="iEmp" placeholder="Apple Inc."/>
+    <label>Nº acciones</label>
+    <input id="iAcc" type="number" placeholder="0" step="0.0001" min="0"/>
+    <label>Precio entrada ($)</label>
+    <input id="iEnt" type="number" placeholder="0.00" step="0.01" min="0"/>
+    <div class="mbtns">
+      <button id="btnCx" onclick="closeModal()">Cancelar</button>
+      <button id="btnOk" onclick="addStock()">Añadir</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = window.location.protocol === 'file:' ? 'http://localhost:3000' : '';
+
+// ── Formato ────────────────────────────────────────────────────────────────────
+
+const f2  = n => (n != null && isFinite(n)) ? Number(n).toFixed(2) : '–';
+const fPct = n => {
+  if (n == null || !isFinite(n)) return '–';
+  return (n >= 0 ? '+' : '') + Number(n).toFixed(2) + '%';
+};
+const fPrice = n => (n != null && isFinite(n)) ? '$' + Number(n).toFixed(2) : '–';
+
+function pctClass(n) {
+  if (n == null || !isFinite(n)) return 'neu';
+  return n > 0 ? 'pos' : n < 0 ? 'neg' : 'neu';
+}
+
+// ── SPX ────────────────────────────────────────────────────────────────────────
+
+async function loadSPX() {
+  try {
+    const d = await fetch(`${API}/spx`).then(r => r.json());
+    document.getElementById('spxPrecio').textContent =
+      d.precio ? '$' + Number(d.precio).toFixed(2) : '—';
+    const distEl  = document.getElementById('spxDist');
+    const estadoEl = document.getElementById('spxEstado');
+    if (isFinite(d.dist)) {
+      distEl.textContent  = (d.dist >= 0 ? '+' : '') + d.dist.toFixed(2) + '%';
+      distEl.style.color  = d.dist >= -2 && d.dist <= 1 ? 'var(--green)' : d.dist < -2 ? 'var(--red)' : 'var(--yel)';
+    }
+    estadoEl.textContent  = d.estado || '—';
+    estadoEl.className    = 'spx-estado ' + (d.estado || 'DESCONOCIDO');
+  } catch { }
+}
+
+// ── Contadores ─────────────────────────────────────────────────────────────────
+
+function updateCounters(data) {
+  const cnt = { COMPRA_FUERTE:0, COMPRA:0, COMPRA_PARCIAL:0, VIGILAR_PULLBACK:0, VIGILAR_REBOTE:0, MANTENER:0, VENDER:0 };
+  data.forEach(s => { if (cnt[s.senal] !== undefined) cnt[s.senal]++; });
+  document.getElementById('cCF').textContent = cnt.COMPRA_FUERTE;
+  document.getElementById('cC').textContent  = cnt.COMPRA;
+  document.getElementById('cCP').textContent = cnt.COMPRA_PARCIAL;
+  document.getElementById('cVP').textContent = cnt.VIGILAR_PULLBACK;
+  document.getElementById('cVR').textContent = cnt.VIGILAR_REBOTE;
+  document.getElementById('cM').textContent  = cnt.MANTENER;
+  document.getElementById('cV').textContent  = cnt.VENDER;
+}
+
+// ── Tabla ──────────────────────────────────────────────────────────────────────
+
+function renderTable(data) {
+  const tbody = document.getElementById('tbody');
+  if (!data || !data.length) {
+    document.getElementById('tbl').style.display = 'none';
+    document.getElementById('noData').style.display = 'block';
+    document.getElementById('noData').textContent = 'Sin datos — esperando primera actualización...';
+    return;
+  }
+  document.getElementById('tbl').style.display = 'table';
+  document.getElementById('noData').style.display = 'none';
+
+  updateCounters(data);
+
+  tbody.innerHTML = data.map(s => {
+    const plPct  = (s.precio && s.precioEntrada)
+      ? (s.precio - s.precioEntrada) / s.precioEntrada * 100 : null;
+    const senal  = s.senal || 'SIN_DATOS';
+    const icons  = Array.isArray(s.alertas) ? s.alertas.map(a => a.icono).join('') : '';
+    const senalLabel = senal.replace(/_/g, ' ');
+
+    return `<tr onclick="showDetail('${s.symbol}')">
+      <td><div class="sym">${s.symbol}</div></td>
+      <td><div class="emp" title="${s.empresa||''}">${s.empresa||''}</div></td>
+      <td class="num">${f2(s.pesoPct)}%</td>
+      <td class="num">${fPrice(s.precioEntrada)}</td>
+      <td class="num">${fPrice(s.precio)}</td>
+      <td class="num ${pctClass(plPct)}">${fPct(plPct)}</td>
+      <td class="num ${pctClass(s.hoyPct)}">${fPct(s.hoyPct)}</td>
+      <td class="num neu" style="font-size:11px">${s.nextEarnings||'—'}</td>
+      <td class="num neu" style="font-size:11px">${s.rating||'—'}</td>
+      <td class="alerts-icons">${icons||'—'}</td>
+      <td><span class="badge ${senal}">${senalLabel}</span></td>
+      <td>
+        <button onclick="event.stopPropagation();del('${s.symbol}')"
+          style="background:none;border:none;color:var(--dim);cursor:pointer;font-size:14px;line-height:1;padding:0 2px"
+          title="Eliminar">✕</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+// ── API calls ──────────────────────────────────────────────────────────────────
+
+async function loadPortfolio() {
+  try {
+    const data = await fetch(`${API}/portfolio`).then(r => r.json());
+    renderTable(data);
+    document.getElementById('dot').className = 'ok';
+    document.getElementById('lastUpd').textContent =
+      'Actualizado ' + new Date().toLocaleTimeString('es-ES');
+  } catch {
+    document.getElementById('dot').className = '';
+    document.getElementById('noData').style.display = 'block';
+    document.getElementById('noData').textContent = 'Conectando con el servidor...';
+  }
+}
+
+function showDetail(symbol) {
+  // Placeholder — se puede abrir panel de detalle en el futuro
+}
+
+async function del(symbol) {
+  if (!confirm(`¿Eliminar ${symbol} del portfolio?`)) return;
+  await fetch(`${API}/remove-stock/${symbol}`, { method: 'DELETE' });
+  await refresh();
+}
+
+// ── Modal ──────────────────────────────────────────────────────────────────────
+
+function openModal() {
+  document.getElementById('overlay').classList.add('show');
+  document.getElementById('iSym').focus();
+}
+function closeModal() {
+  document.getElementById('overlay').classList.remove('show');
+  ['iSym','iEmp','iAcc','iEnt'].forEach(id => document.getElementById(id).value = '');
+}
+async function addStock() {
+  const sym = document.getElementById('iSym').value.trim().toUpperCase();
+  if (!sym) return;
+  document.getElementById('btnOk').textContent = '...';
+  try {
+    await fetch(`${API}/add-stock`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbol: sym,
+        empresa:       document.getElementById('iEmp').value.trim(),
+        acciones:      parseFloat(document.getElementById('iAcc').value) || 0,
+        precioEntrada: parseFloat(document.getElementById('iEnt').value) || 0
+      })
+    });
+    closeModal();
+    await refresh();
+  } catch (e) { alert('Error: ' + e.message); }
+  finally { document.getElementById('btnOk').textContent = 'Añadir'; }
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter'  && document.getElementById('overlay').classList.contains('show')) addStock();
+  if (e.key === 'Escape') closeModal();
+});
+
+// ── Refresh ────────────────────────────────────────────────────────────────────
+
+async function refresh() {
+  await Promise.all([loadPortfolio(), loadSPX()]);
+}
+
+refresh();
+setInterval(refresh, 30_000);
+</script>
+</body>
+</html>

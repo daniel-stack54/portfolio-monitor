@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: stock-monitor
+    runtime: node
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: MONGODB_URI
+        sync: false
+      - key: FINNHUB_KEY
+        sync: false
+      - key: PORT
+        value: "10000"

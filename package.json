@@ -1,0 +1,26 @@
+{
+  "name": "stock-monitor",
+  "version": "1.0.0",
+  "description": "",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "concurrently --kill-others \"npm run server\" \"npm run app\"",
+    "server": "node server.js",
+    "app": "wait-on http://localhost:3000/ping && node launch-electron.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.16.1",
+    "concurrently": "^9.2.1",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "mongoose": "^9.6.2"
+  },
+  "devDependencies": {
+    "electron": "^25.9.8",
+    "wait-on": "^9.0.10"
+  }
+}
