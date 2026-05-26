@@ -4,7 +4,7 @@
   "description": "Portfolio Monitor — Motor de señales v3.0",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "node --max-http-header-size=32768 server.js",
     "test": "node testScoring.js"
   },
   "dependencies": {

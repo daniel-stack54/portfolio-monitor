@@ -2,6 +2,8 @@
 const express = require('express');
 const path    = require('path');
 const axios   = require('axios');
+const https   = require('https');
+const fs      = require('fs');
 
 const { evaluarActivo, ordenarPorFuerzaSenal } = require('./scoringEngine');
 const { PORTFOLIO_PERSONAL, calcularPesosPortfolio } = require('./portfolio');
@@ -9,7 +11,17 @@ const { PORTFOLIO_PERSONAL, calcularPesosPortfolio } = require('./portfolio');
 const app  = express();
 const PORT = process.env.PORT || 3000;
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('manifest.json')) {
+      res.setHeader('Content-Type', 'application/manifest+json');
+    }
+    if (filePath.endsWith('sw.js')) {
+      res.setHeader('Service-Worker-Allowed', '/');
+      res.setHeader('Cache-Control', 'no-cache');
+    }
+  }
+}));
 
 // ── Yahoo Finance HTTP client ─────────────────────────────────────────────────
 
@@ -21,38 +33,48 @@ const YF_HEADERS = {
 };
 
 let _crumb = null, _cookies = '';
+let _crumbPromise = null;
 
 async function refreshCrumb() {
-  try {
-    const r1 = await axios.get('https://finance.yahoo.com/', {
-      headers: YF_HEADERS, maxRedirects: 3, timeout: 10000
-    });
-    _cookies = (r1.headers['set-cookie'] || []).map(c => c.split(';')[0]).join('; ');
-    const r2 = await axios.get('https://query2.finance.yahoo.com/v1/test/getcrumb', {
-      headers: { ...YF_HEADERS, Cookie: _cookies }, timeout: 8000
-    });
-    _crumb = typeof r2.data === 'string' ? r2.data.trim() : null;
-    if (_crumb) console.log(`  YF crumb OK: ${_crumb}`);
-  } catch (e) {
-    console.warn('  Crumb fetch failed:', e.message);
-    _crumb = '';
-  }
+  // Singleton: only one refresh runs at a time
+  if (_crumbPromise) return _crumbPromise;
+  _crumbPromise = (async () => {
+    try {
+      const r1 = await axios.get('https://finance.yahoo.com/', {
+        headers: YF_HEADERS, maxRedirects: 3, timeout: 15000,
+        maxContentLength: 5 * 1024 * 1024
+      });
+      _cookies = (r1.headers['set-cookie'] || []).map(c => c.split(';')[0]).join('; ');
+      const r2 = await axios.get('https://query2.finance.yahoo.com/v1/test/getcrumb', {
+        headers: { ...YF_HEADERS, Cookie: _cookies }, timeout: 8000
+      });
+      _crumb = typeof r2.data === 'string' ? r2.data.trim() : '';
+      if (_crumb) console.log(`  YF crumb OK: ${_crumb}`);
+      else console.warn('  Crumb empty — proceeding without');
+    } catch (e) {
+      console.warn('  Crumb fetch failed:', e.message);
+      _crumb = '';
+    }
+  })();
+  await _crumbPromise;
+  _crumbPromise = null;
 }
 
 async function yfGet(url, params = {}) {
   if (_crumb === null) await refreshCrumb();
-  if (_crumb) params.crumb = _crumb;
+  const p = { ...params };
+  if (_crumb) p.crumb = _crumb;
   const headers = { ...YF_HEADERS };
   if (_cookies) headers.Cookie = _cookies;
   try {
-    return await axios.get(url, { params, headers, timeout: 13000 });
+    return await axios.get(url, { params: p, headers, timeout: 13000 });
   } catch (e) {
-    // Try once more on 401 with fresh crumb
-    if (e.response?.status === 401) {
+    if (e.response?.status === 401 && _crumb) {
+      // Only refresh crumb if it was previously valid
       _crumb = null;
       await refreshCrumb();
-      if (_crumb) params.crumb = _crumb;
-      return axios.get(url, { params, headers: { ...YF_HEADERS, Cookie: _cookies }, timeout: 13000 });
+      if (_crumb) p.crumb = _crumb;
+      return axios.get(url, { params: p, headers: { ...YF_HEADERS, Cookie: _cookies }, timeout: 13000 });
     }
     throw e;
   }
@@ -220,14 +242,16 @@ async function fetchSPX() {
 // ── Build portfolio data ──────────────────────────────────────────────────────
 
 let _cache = null, _cacheTs = 0;
-const CACHE_TTL = 3 * 60 * 1000;
+let _building = false;
+const CACHE_TTL = 5 * 60 * 1000;
 
 async function buildData() {
   const tickers = PORTFOLIO_PERSONAL.map(p => p.ticker);
   const map = {};
-  const BATCH = 5;
+  const BATCH = 8;
 
   console.log(`\nFetching ${tickers.length} tickers from Yahoo Finance…`);
+  if (_crumb === null) await refreshCrumb();  // single crumb init before batch
   for (let i = 0; i < tickers.length; i += BATCH) {
     const batch = tickers.slice(i, i + BATCH);
     process.stdout.write(`  [${String(i + 1).padStart(2)}-${String(Math.min(i + BATCH, tickers.length)).padStart(2)}/${tickers.length}] ${batch.join(', ')}\n`);
@@ -235,7 +259,7 @@ async function buildData() {
     results.forEach((r, j) => {
       map[batch[j]] = r.status === 'fulfilled' ? r.value : { chart: null, summary: { earnings: null, rating: null, targetPrice: null }, news: [] };
     });
-    if (i + BATCH < tickers.length) await new Promise(r => setTimeout(r, 350));
+    if (i + BATCH < tickers.length) await new Promise(r => setTimeout(r, 150));
   }
 
   process.stdout.write('  [SPX] ^GSPC\n');
@@ -301,9 +325,33 @@ async function buildData() {
 }
 
 async function getData(force = false) {
-  if (!force && _cache && Date.now() - _cacheTs < CACHE_TTL) return _cache;
-  _cache = await buildData();
-  _cacheTs = Date.now();
+  const stale = _cache && Date.now() - _cacheTs >= CACHE_TTL;
+
+  // Return stale cache immediately and refresh in background
+  if (!force && _cache && stale && !_building) {
+    _building = true;
+    buildData()
+      .then(d => { _cache = d; _cacheTs = Date.now(); })
+      .catch(e => console.error('BG refresh failed:', e.message))
+      .finally(() => { _building = false; });
+    return _cache;
+  }
+
+  if (!force && _cache && !stale) return _cache;
+
+  // No cache yet or forced — wait for fresh data
+  if (!_building) {
+    _building = true;
+    try {
+      _cache = await buildData();
+      _cacheTs = Date.now();
+    } finally {
+      _building = false;
+    }
+  } else {
+    // Another build in progress — wait for it
+    while (_building) await new Promise(r => setTimeout(r, 300));
+  }
   return _cache;
 }
 
@@ -319,4 +367,22 @@ app.get('/api/refresh', async (req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.listen(PORT, () => console.log(`\nPortfolio Monitor v3.0  →  http://localhost:${PORT}\n`));
+app.listen(PORT, () => {
+  console.log(`Portfolio Monitor v3.0  →  http://localhost:${PORT}`);
+});
+
+// HTTPS server for PWA standalone mode on mobile
+const HTTPS_PORT = process.env.HTTPS_PORT || 4443;
+try {
+  const sslOpts = {
+    key:  fs.readFileSync(path.join(__dirname, 'key.pem')),
+    cert: fs.readFileSync(path.join(__dirname, 'cert.pem'))
+  };
+  https.createServer(sslOpts, app).listen(HTTPS_PORT, () => {
+    console.log(`Portfolio Monitor v3.0  →  https://192.168.1.143:${HTTPS_PORT}  (móvil PWA)\n`);
+    getData().catch(e => console.error('Pre-warm error:', e.message));
+  });
+} catch (e) {
+  console.warn('HTTPS no disponible (cert.pem/key.pem no encontrados):', e.message);
+  getData().catch(e2 => console.error('Pre-warm error:', e2.message));
+}
