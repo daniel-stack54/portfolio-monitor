@@ -4,7 +4,7 @@
   "description": "",
   "main": "electron/main.js",
   "scripts": {
-    "start": "concurrently --kill-others \"npm run server\" \"npm run app\"",
+    "start": "node --max-http-header-size=65536 server.js",
     "server": "node server.js",
     "app": "wait-on http://localhost:3000/ping && node launch-electron.js"
   },
