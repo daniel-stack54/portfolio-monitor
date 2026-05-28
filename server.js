@@ -53,10 +53,15 @@ const dataSchema = new mongoose.Schema({
   ema50:          Number,
   ema200:         Number,
   stochRsi:       Number,
+  ema100:          Number,
   senal:          { type: String, default: 'SIN_DATOS' },
   razon:          { type: String, default: '' },
   alertas:        { type: Array,  default: [] },
   cantidadAlertas:{ type: Number, default: 0 },
+  earningsDate:   { type: String, default: null },
+  earningsUrgency:{ type: String, default: 'NORMAL' },
+  ratingMean:     { type: Number, default: null },
+  ratingText:     { type: String, default: null },
   updatedAt:      { type: Date,   default: Date.now }
 }, { collection: 'stockdata' });
 
@@ -94,6 +99,9 @@ const YF_HEADERS = {
   'Accept': 'application/json'
 };
 
+const yahooMetaCache = new Map();
+const newsCache      = new Map();
+
 async function fetchCandles(symbol) {
   for (let i = 1; i <= 3; i++) {
     try {
@@ -117,6 +125,77 @@ async function fetchCandles(symbol) {
       if (i === 3) throw e;
       await sleep(i * 1500);
     }
+  }
+}
+
+// ── Yahoo Finance metadata (earnings + rating, caché 24h) ─────────────────────
+
+async function fetchYahooMeta(symbol) {
+  const key    = symbol.toUpperCase();
+  const cached = yahooMetaCache.get(key);
+  if (cached && Date.now() - cached.ts < 24 * 3600 * 1000) return cached.data;
+
+  try {
+    const res = await axios.get(
+      `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symbol)}`,
+      { params: { modules: 'calendarEvents,financialData' }, headers: YF_HEADERS, timeout: 10000 }
+    );
+    const r = res.data?.quoteSummary?.result?.[0];
+    if (!r) return null;
+
+    // Earnings date
+    let earningsDate = null, earningsUrgency = 'NORMAL';
+    const dates = r.calendarEvents?.earnings?.earningsDate;
+    if (Array.isArray(dates) && dates.length > 0) {
+      const ts = (dates[0]?.raw || 0) * 1000;
+      const daysUntil = (ts - Date.now()) / 86400000;
+      if (daysUntil > 0 && daysUntil < 60) {
+        earningsDate    = new Date(ts).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' });
+        earningsUrgency = daysUntil < 3 ? 'URGENTE' : daysUntil < 7 ? 'PROXIMO' : 'NORMAL';
+      }
+    }
+
+    // Analyst rating (1=Strong Buy … 5=Sell)
+    const mean = r.financialData?.recommendationMean?.raw;
+    let ratingText = null;
+    if (mean != null) {
+      if      (mean <= 1.5) ratingText = 'STRONG BUY';
+      else if (mean <= 2.5) ratingText = 'BUY';
+      else if (mean <= 3.5) ratingText = 'HOLD';
+      else if (mean <= 4.5) ratingText = 'UNDERPERFORM';
+      else                  ratingText = 'SELL';
+    }
+
+    const data = { earningsDate, earningsUrgency, ratingMean: mean || null, ratingText };
+    yahooMetaCache.set(key, { ts: Date.now(), data });
+    return data;
+  } catch (e) {
+    console.warn(`[${symbol}] Yahoo meta: ${e.message}`);
+    return null;
+  }
+}
+
+// ── Yahoo Finance news (caché 2h) ─────────────────────────────────────────────
+
+async function fetchYahooNews(symbol) {
+  const key    = symbol.toUpperCase();
+  const cached = newsCache.get(key);
+  if (cached && Date.now() - cached.ts < 2 * 3600 * 1000) return cached.data;
+
+  try {
+    const res = await axios.get(
+      'https://query1.finance.yahoo.com/v1/finance/search',
+      { params: { q: key, lang: 'en-US', region: 'US', quotesCount: 0, newsCount: 5 },
+        headers: YF_HEADERS, timeout: 8000 }
+    );
+    const data = (res.data?.news || []).slice(0, 5).map(n => ({
+      title: n.title, publisher: n.publisher, link: n.link, publishTime: n.providerPublishTime
+    }));
+    newsCache.set(key, { ts: Date.now(), data });
+    return data;
+  } catch (e) {
+    console.warn(`[${key}] News: ${e.message}`);
+    return [];
   }
 }
 
@@ -199,7 +278,11 @@ async function updateSPX() {
 // ── Fetch + calcular un símbolo ────────────────────────────────────────────────
 
 async function fetchAndCalc(symbol) {
-  const [velas, quote] = await Promise.all([fetchCandles(symbol), finnhubQuote(symbol)]);
+  const [velas, quote, meta] = await Promise.all([
+    fetchCandles(symbol),
+    finnhubQuote(symbol),
+    fetchYahooMeta(symbol).catch(() => null)
+  ]);
   if (!velas.length) throw new Error(`Sin velas para ${symbol}`);
 
   const closes = velas.map(c => c.close);
@@ -217,6 +300,7 @@ async function fetchAndCalc(symbol) {
 
   const ema20    = calcEMA(closesAct, 20);
   const ema50    = calcEMA(closesAct, 50);
+  const ema100   = calcEMA(closesAct, 100);
   const ema200   = calcEMA(closesAct, 200);
   const stochRsi = calcStochRSI(closesAct);
   const hoyPct   = last.open > 0 ? +((precio - last.open) / last.open * 100).toFixed(2) : 0;
@@ -224,7 +308,7 @@ async function fetchAndCalc(symbol) {
   const resultado = evaluarActivo({
     ticker:   symbol,
     precio,
-    ema20,    ema50,    ema200,
+    ema20, ema50, ema100, ema200,
     stochRsi,
     velas:    velasActualizadas,
     spxPrecio: spxState.precio,
@@ -239,12 +323,16 @@ async function fetchAndCalc(symbol) {
     low:    last.low,
     volume: last.volume,
     hoyPct,
-    ema20,  ema50,  ema200,
+    ema20, ema50, ema100, ema200,
     stochRsi,
     senal:          resultado.senal,
     razon:          resultado.razon || '',
     alertas:        resultado.alertas || [],
     cantidadAlertas:resultado.cantidadAlertas || 0,
+    earningsDate:    meta?.earningsDate    || null,
+    earningsUrgency: meta?.earningsUrgency || 'NORMAL',
+    ratingMean:      meta?.ratingMean      || null,
+    ratingText:      meta?.ratingText      || null,
     updatedAt: new Date()
   };
 }
@@ -383,6 +471,12 @@ app.get('/candles/:symbol', async (req, res) => {
   try {
     const all = await fetchCandles(req.params.symbol.toUpperCase());
     res.json(all.slice(-90));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/news/:symbol', async (req, res) => {
+  try {
+    res.json(await fetchYahooNews(req.params.symbol.toUpperCase()));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

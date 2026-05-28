@@ -47,7 +47,11 @@ const PORTFOLIO_PERSONAL = [
   { ticker: 'STRL', empresa: 'Sterling Infrastructure',acciones: 0.0713, entrada: 753.05 },
   { ticker: 'AVGO', empresa: 'Broadcom',              acciones: 0.1203, entrada: 352.01 },
   { ticker: 'SITM', empresa: 'SiTime',                acciones: 0.0622, entrada: 733.18 },
-  { ticker: 'TSEM', empresa: 'Tower Semiconductor',   acciones: 0.1442, entrada: 283.80 }
+  { ticker: 'TSEM', empresa: 'Tower Semiconductor',   acciones: 0.1442, entrada: 283.80 },
+
+  // WATCHLIST — Sin posición abierta
+  { ticker: 'APP',  empresa: 'Applovin Corporation', acciones: 0, entrada: 0 },
+  { ticker: 'CVNA', empresa: 'Carvana',              acciones: 0, entrada: 0 }
 ];
 
 const CAPITAL_DISPONIBLE_EUR = 556.80;
