@@ -73,6 +73,7 @@ const dataSchema = new mongoose.Schema({
   pullbackRetroceso:     { type: Number, default: null },
   pullbackVelasRojas:    { type: Number, default: null },
   condiciones7:          { type: String, default: null },
+  zonaActiva:            { type: String, default: null },
   rsc:                   { type: Number, default: null },
   rscSubiendo:           { type: Boolean, default: null },
   rscHace5:              { type: Number, default: null },
@@ -540,6 +541,7 @@ async function fetchAndCalc(symbol) {
     pullbackRetroceso: resultado.detalles?.pullbackRetroceso ?? null,
     pullbackVelasRojas:resultado.detalles?.pullbackVelasRojas ?? null,
     condiciones7:      resultado.detalles?.condiciones7      || null,
+    zonaActiva:        resultado.detalles?.zonaActiva        || null,
     senal:          resultado.senal,
     razon:          resultado.razon || '',
     alertas:        resultado.alertas || [],
@@ -566,10 +568,10 @@ async function updateAll() {
     for (const s of stocks) {
       try {
         const datos = await fetchAndCalc(s.symbol);
-        await StockData.findOneAndUpdate(
+        await StockData.updateOne(
           { symbol: s.symbol },
-          datos,
-          { upsert: true, returnDocument: 'after' }
+          { $set: datos },
+          { upsert: true, strict: false }
         );
         // Alerta si señal de compra nueva
         if (datos.senal === 'COMPRA_FUERTE' || datos.senal === 'COMPRA') {
@@ -580,11 +582,12 @@ async function updateAll() {
           }
         }
         const icons = datos.alertas.map(a => a.icono).join(' ') || '—';
-        console.log(`[${s.symbol}] ${datos.senal} | ${icons} | StochRSI=${datos.stochRsi}`);
+        const zona  = datos.zonaActiva ? `zona:${datos.zonaActiva}` : 'SIN_ZONA';
+        console.log(`[${s.symbol}] ${datos.senal.padEnd(16)} | ${zona.padEnd(14)} | StochRSI=${String(datos.stochRsi??'—').padEnd(6)} | ${icons}`);
       } catch (e) {
         console.error(`[${s.symbol}] Error:`, e.message);
       }
-      await sleep(900);
+      await sleep(1500);
     }
   } finally {
     _updating = false;
@@ -714,6 +717,67 @@ app.get('/candles/:symbol', async (req, res) => {
 app.get('/news/:symbol', async (req, res) => {
   try {
     res.json(await fetchYahooNews(req.params.symbol.toUpperCase()));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Tabla de diagnóstico: zonas y señales de las 37 acciones ─────────────────
+
+app.get('/diagnostic', async (req, res) => {
+  try {
+    const data = await StockData.find().lean();
+    const ORDEN = { COMPRA_FUERTE:1, COMPRA:2, COMPRA_PARCIAL:3, VIGILAR_PULLBACK:4, MANTENER:5, VENDER:6, SIN_DATOS:7 };
+    data.sort((a, b) => (ORDEN[a.senal] || 9) - (ORDEN[b.senal] || 9));
+
+    const rows = data.map(d => {
+      const distEMA20  = d.ema20  ? ((d.precio - d.ema20)  / d.ema20  * 100).toFixed(1) + '%' : 'N/D';
+      const distWMA50  = d.wma50  ? ((d.precio - d.wma50)  / d.wma50  * 100).toFixed(1) + '%' : 'N/D';
+      const distWMA100 = d.wma100 ? ((d.precio - d.wma100) / d.wma100 * 100).toFixed(1) + '%' : 'N/D';
+      const vela = d.alertas?.some(a => a.tipo === 'VELA_VERDE')
+        ? (d.alertas.find(a => a.tipo === 'VELA_VERDE')?.icono === '🟢' ? 'VERDE_CUERPO' : 'VERDE')
+        : 'ROJA';
+      return {
+        ticker:   d.symbol,
+        precio:   d.precio?.toFixed(2)  ?? '—',
+        ema20:    d.ema20?.toFixed(2)   ?? '—',
+        wma50:    d.wma50?.toFixed(2)   ?? '—',
+        wma100:   d.wma100?.toFixed(2)  ?? '—',
+        distEMA20, distWMA50, distWMA100,
+        enZona:   d.zonaActiva ? 'SÍ'  : 'NO',
+        zona:     d.zonaActiva          ?? '—',
+        vela,
+        stochRsi: d.stochRsi?.toFixed(1) ?? '—',
+        vol:      d.ratioVolumen?.toFixed(2) ?? '—',
+        senal:    d.senal ?? '—'
+      };
+    });
+
+    // Imprimir tabla en consola
+    const H = 'Ticker  Precio    EMA20     WMA50     WMA100    dEMA20  dWMA50  dWMA100 Zona  ZonaAct     Vela          StochRSI  Vol    Señal';
+    console.log('\n' + '═'.repeat(H.length));
+    console.log('DIAGNOSTIC — ' + new Date().toLocaleTimeString());
+    console.log(H);
+    console.log('─'.repeat(H.length));
+    for (const r of rows) {
+      console.log(
+        r.ticker.padEnd(8) +
+        r.precio.padStart(7)   + '  ' +
+        r.ema20.padStart(8)    + '  ' +
+        r.wma50.padStart(8)    + '  ' +
+        r.wma100.padStart(8)   + '  ' +
+        r.distEMA20.padStart(7)  + ' ' +
+        r.distWMA50.padStart(7)  + ' ' +
+        r.distWMA100.padStart(8) + ' ' +
+        r.enZona.padEnd(6) +
+        r.zona.padEnd(12) +
+        r.vela.padEnd(14) +
+        r.stochRsi.padStart(8) + '  ' +
+        r.vol.padStart(5) + '  ' +
+        r.senal
+      );
+    }
+    console.log('═'.repeat(H.length) + '\n');
+
+    res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

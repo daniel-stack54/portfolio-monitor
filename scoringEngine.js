@@ -1,6 +1,22 @@
 // ============================================================================
-// PORTFOLIO MONITOR - MOTOR CONFLUENCIA v4.1
-// Regla universal: sin pullback real verificado → sin compra jamás
+// PORTFOLIO MONITOR - MOTOR ZONA MEDIAS MÓVILES v5.0
+// Regla única: sin zona de soporte → sin compra, punto.
+//
+// GATES (en orden):
+//   1) precio < EMA200           → VENDER (hard veto)
+//   2) NOT en zona ±3% EMA20/WMA50/WMA100 → MANTENER
+//   3) En zona + sin vela verde  → VIGILAR_PULLBACK
+//   4) En zona + vela verde      → COMPRA_FUERTE / COMPRA / COMPRA_PARCIAL
+//
+// ZONAS DE SOPORTE VÁLIDAS:
+//   ZONA_EMA20:   precio entre EMA20*0.97  y EMA20*1.03
+//   ZONA_WMA50:   precio entre WMA50*0.97  y WMA50*1.03
+//   ZONA_WMA100:  precio entre WMA100*0.97 y WMA100*1.03
+//
+// CALIDAD DE ENTRADA (solo si en zona + vela verde):
+//   stoch_valido   = StochRSI en [40,70] AND actual > anterior
+//   volumen_fuerte = ratioVolumen >= 1.2
+//   vela_con_cuerpo = cuerpo >= 40% del rango
 // ============================================================================
 
 'use strict';
@@ -9,7 +25,7 @@ const pct     = (a, b) => (!Number.isFinite(a) || !Number.isFinite(b) || b === 0
 const isValid = v => Number.isFinite(v) && v > 0;
 
 // ============================================================================
-// RSC MANSFIELD DIARIO (compatibilidad)
+// RSC MANSFIELD DIARIO (compatibilidad server.js)
 // ============================================================================
 
 function calcularRSCMansfield(preciosAccion, preciosSPX) {
@@ -38,11 +54,11 @@ function calcularRSCMansfield(preciosAccion, preciosSPX) {
 
 function evaluarVela(v) {
   if (!v) return { esVerde: false, conCuerpo: false, cierreAlto: false, ratio: 0 };
-  const range   = v.high - v.low;
-  const body    = Math.abs(v.close - v.open);
-  const esVerde = v.close > v.open;
+  const range   = (v.high || 0) - (v.low || 0);
+  const body    = Math.abs((v.close || 0) - (v.open || 0));
+  const esVerde = (v.close || 0) > (v.open || 0);
   const ratio   = range > 0 ? body / range : 0;
-  const cierreAlto = range > 0 ? (v.close - v.low) / range >= 0.6 : false;
+  const cierreAlto = range > 0 ? ((v.close - v.low) / range) >= 0.6 : false;
   return { esVerde, conCuerpo: esVerde && ratio >= 0.4, cierreAlto, ratio };
 }
 
@@ -61,7 +77,7 @@ function evaluarVolumen(velaActual, velasRecientes) {
 }
 
 // ============================================================================
-// PATRONES DE VELA
+// PATRONES DE VELA (badges informativos)
 // ============================================================================
 
 function esHammer(velas) {
@@ -104,314 +120,208 @@ function detectarPatronesVela(velas) {
 }
 
 // ============================================================================
-// ESTADO SPX
+// ESTADO SPX (badge informativo)
 // ============================================================================
 
 function evaluarSPX(spxPrecio, spxEma20) {
-  if (!isValid(spxPrecio) || !isValid(spxEma20)) return { favorable: false, distancia: null, estado: 'DESCONOCIDO' };
+  if (!isValid(spxPrecio) || !isValid(spxEma20))
+    return { favorable: false, distancia: null, estado: 'DESCONOCIDO' };
   const dist = pct(spxPrecio, spxEma20);
-  if (dist >= -2 && dist <= 1)   return { favorable: true,  distancia: dist, estado: 'FAVORABLE' };
-  if (dist > 1 && dist <= 2.5)   return { favorable: false, distancia: dist, estado: 'EXTENDIDO_LEVE' };
-  if (dist < -2 && dist >= -4)   return { favorable: false, distancia: dist, estado: 'CORRECCION_LEVE' };
+  if (dist >= -2 && dist <= 1)  return { favorable: true,  distancia: dist, estado: 'FAVORABLE' };
+  if (dist > 1 && dist <= 2.5)  return { favorable: false, distancia: dist, estado: 'EXTENDIDO_LEVE' };
+  if (dist < -2 && dist >= -4)  return { favorable: false, distancia: dist, estado: 'CORRECCION_LEVE' };
   return { favorable: false, distancia: dist, estado: dist > 0 ? 'EXTENDIDO' : 'CORRECCION_FUERTE' };
 }
 
 // ============================================================================
-// RÉGIMEN DE MERCADO
-// ============================================================================
-
-function evaluarRegimen(datos) {
-  const { precio, ema200, wma20, wma50, pendienteEMA200 } = datos;
-  if (!isValid(precio) || !isValid(ema200)) return 'DESCONOCIDO';
-  if (precio < ema200) return 'BAJISTA';
-  const p = pendienteEMA200 || 0;
-  if (p > 0 && isValid(wma20) && isValid(wma50) && precio > wma20 && wma20 > wma50)
-    return 'ALCISTA_FUERTE';
-  if (Math.abs(p) < 0.1) return 'NEUTRAL';
-  return 'ALCISTA_ACEPTABLE';
-}
-
-// ============================================================================
-// FUERZA RELATIVA (semanal > diario)
-// ============================================================================
-
-function evaluarFuerzaRelativa(datos) {
-  const mrsW  = datos.mansfieldSemanal?.valor;
-  const pendW = datos.mansfieldSemanal?.pendiente;
-  const mrsD  = datos.rsc?.valor;
-  const pendD = datos.rsc?.subiendo === true ? 1 : datos.rsc?.subiendo === false ? -1 : 0;
-  const mrs      = mrsW ?? mrsD ?? null;
-  const pendiente = pendW ?? pendD;
-  if (mrs === null) return 'DESCONOCIDO';
-  if (mrs > 5  && pendiente > 0)  return 'LIDERAZGO_FUERTE';
-  if (mrs > 0  && pendiente >= 0) return 'LIDERAZGO_MODERADO';
-  if (mrs > -2 && pendiente > 0)  return 'NEUTRAL_POSITIVO';
-  return 'DEBIL';
-}
-
-// ============================================================================
-// STOCHRSI DETALLADO
+// STOCHRSI DETALLADO (badge informativo)
 // ============================================================================
 
 function evaluarStochRSIDetallado(stochRsi, stochRsiPrev) {
-  if (stochRsi == null) return { zona: 'DESCONOCIDO', giroValido: false, giroInvalido: false, valor: null };
-  const subiendo     = stochRsiPrev != null ? stochRsi > stochRsiPrev : null;
-  const giroValido   = subiendo === true && stochRsi >= 20 && stochRsi <= 75;
-  const giroInvalido = stochRsi > 80;
+  if (stochRsi == null) return { zona: 'DESCONOCIDO', giroValido: false, valor: null, subiendo: null };
+  const subiendo   = stochRsiPrev != null ? stochRsi > stochRsiPrev : null;
+  const giroValido = subiendo === true && stochRsi >= 40 && stochRsi <= 70;
   let zona;
   if (stochRsi > 80)       zona = 'ZONA_PELIGROSA';
   else if (stochRsi >= 40) zona = 'ZONA_OPTIMA';
   else if (stochRsi >= 20) zona = 'ZONA_ACEPTABLE';
   else                     zona = 'ZONA_BAJA';
-  return { zona, giroValido, giroInvalido, subiendo, valor: stochRsi };
+  return { zona, giroValido, subiendo, valor: stochRsi };
 }
 
 // ============================================================================
-// PULLBACK REAL — VERIFICACIÓN OBLIGATORIA (PC0a + PC0b + PC0c)
-// Sin pullback real → sin señal de compra, punto.
+// DETECCIÓN DE ZONA DE SOPORTE — NÚCLEO DE LA LÓGICA v5.0
+// El precio debe estar dentro de ±3% de EMA20, WMA50 o WMA100.
+// Si no está en ninguna zona → nunca hay señal de compra.
 // ============================================================================
 
-function verificarPullbackReal(datos) {
-  const { precio, wma20, velas } = datos;
-  if (!Array.isArray(velas) || velas.length < 10) {
-    return { real: false, razon: 'Datos insuficientes', retroceso: 0, velasRojas: 0 };
+function detectarZonaSoporte(datos) {
+  const { precio, ema20, wma50, wma100 } = datos;
+  const MARGEN = 0.03;
+
+  const enEMA20  = isValid(ema20)  && precio >= ema20  * (1 - MARGEN) && precio <= ema20  * (1 + MARGEN);
+  const enWMA50  = isValid(wma50)  && precio >= wma50  * (1 - MARGEN) && precio <= wma50  * (1 + MARGEN);
+  const enWMA100 = isValid(wma100) && precio >= wma100 * (1 - MARGEN) && precio <= wma100 * (1 + MARGEN);
+
+  const enZona    = enEMA20 || enWMA50 || enWMA100;
+  // Prioridad: la zona más cercana al precio gana
+  let zonaActiva = null;
+  if (enEMA20 || enWMA50 || enWMA100) {
+    const distancias = [];
+    if (enEMA20  && isValid(ema20))  distancias.push({ zona: 'EMA20',  dist: Math.abs(pct(precio, ema20))  });
+    if (enWMA50  && isValid(wma50))  distancias.push({ zona: 'WMA50',  dist: Math.abs(pct(precio, wma50))  });
+    if (enWMA100 && isValid(wma100)) distancias.push({ zona: 'WMA100', dist: Math.abs(pct(precio, wma100)) });
+    distancias.sort((a, b) => a.dist - b.dist);
+    zonaActiva = distancias[0]?.zona ?? null;
   }
 
-  // PC0a: Retroceso mínimo ≥2% desde máximos de los últimos 10 días
-  const max10d    = Math.max(...velas.slice(-10).map(v => v.high || v.close || 0));
-  const retroceso = max10d > 0 ? (max10d - precio) / max10d * 100 : 0;
-  const pc0a      = retroceso >= 2;
+  const distEMA20  = isValid(ema20)  ? pct(precio, ema20).toFixed(2)  + '%' : 'N/D';
+  const distWMA50  = isValid(wma50)  ? pct(precio, wma50).toFixed(2)  + '%' : 'N/D';
+  const distWMA100 = isValid(wma100) ? pct(precio, wma100).toFixed(2) + '%' : 'N/D';
 
-  // PC0b: Al menos 2 velas rojas en las últimas 5
-  const ultimas5  = velas.slice(-5);
-  const velasRojas = ultimas5.filter(v => (v.close || 0) < (v.open || 0)).length;
-  const pc0b      = velasRojas >= 2;
-
-  // PC0c: Precio acercándose a WMA20 (más cerca hoy que hace 3 días)
-  let pc0c = true; // si no hay WMA20, no penalizar
-  if (isValid(wma20) && velas.length >= 4) {
-    const cierre3ago = velas[velas.length - 4].close || precio;
-    const distHoy   = Math.abs(precio - wma20) / wma20;
-    const dist3ago  = Math.abs(cierre3ago - wma20) / wma20;
-    // Si la diferencia es muy pequeña (<0.3%), considerar neutral (no bloquear)
-    pc0c = distHoy <= dist3ago || (dist3ago - distHoy) < -0.003;
-  }
-
-  const real = pc0a && pc0b && pc0c;
-  return { real, pc0a, pc0b, pc0c, retroceso: +retroceso.toFixed(2), velasRojas, max10d };
+  return { enZona, zonaActiva, enEMA20, enWMA50, enWMA100, distEMA20, distWMA50, distWMA100 };
 }
 
 // ============================================================================
-// 7 CONDICIONES DE CALIDAD (solo se evalúan si pullback real = true)
-// ============================================================================
-
-const NOMBRES_COND = {
-  c1: 'régimen alcista fuerte',
-  c2: 'liderazgo Mansfield ↑',
-  c3: 'WMA20>WMA50>WMA100 alineadas',
-  c4: 'volumen ≥1.0x promedio',
-  c5: 'StochRSI giro válido 20-75',
-  c6: 'vela verde cuerpo ≥40%',
-  c7: 'cierre en 60% superior'
-};
-
-function evaluar7Condiciones(datos, regimen, fuerza, stoch) {
-  const vela = evaluarVela(datos.velas?.[datos.velas.length - 1]);
-  return {
-    c1: regimen === 'ALCISTA_FUERTE',
-    c2: fuerza  === 'LIDERAZGO_FUERTE',
-    c3: isValid(datos.wma20) && isValid(datos.wma50) && isValid(datos.wma100)
-        && datos.wma20 > datos.wma50 && datos.wma50 > datos.wma100,
-    c4: (datos.ratioVolumen ?? 0) >= 1.0,
-    c5: stoch.giroValido,
-    c6: vela.esVerde && vela.conCuerpo,
-    c7: vela.esVerde && vela.cierreAlto
-  };
-}
-
-// ============================================================================
-// HELPER: SUBIR SEÑAL UN NIVEL
-// ============================================================================
-
-function subirSenal(senal) {
-  const up = { MANTENER:'VIGILAR_PULLBACK', VIGILAR_PULLBACK:'COMPRA_PARCIAL', VIGILAR_REBOTE:'COMPRA_PARCIAL', COMPRA_PARCIAL:'COMPRA', COMPRA:'COMPRA_FUERTE' };
-  return up[senal] || senal;
-}
-
-// ============================================================================
-// FUNCIÓN PRINCIPAL — EVALUAR ACTIVO v4.1
+// FUNCIÓN PRINCIPAL — EVALUAR ACTIVO v5.0
 // ============================================================================
 
 function evaluarActivo(datos) {
+  const ticker = datos.ticker || 'DESCONOCIDO';
+
   if (!isValid(datos.precio) || !isValid(datos.ema200)) {
-    return { ticker: datos.ticker || 'DESCONOCIDO', senal: 'SIN_DATOS', alertas: [], cantidadAlertas: 0, detalles: null };
+    return { ticker, senal: 'SIN_DATOS', alertas: [], cantidadAlertas: 0, razon: 'Datos insuficientes', detalles: null };
   }
 
-  // ─── PASO 1: Hard veto EMA200 ──────────────────────────────────────────────
+  // ── PASO 1: Hard veto EMA200 ───────────────────────────────────────────────
   if (datos.precio < datos.ema200) {
     const urgente = (datos.pendienteEMA200 || 0) < -0.05;
     return {
-      ticker: datos.ticker, senal: 'VENDER',
+      ticker, senal: 'VENDER',
       razon: urgente
         ? '⚠️ Precio bajo EMA200 con pendiente negativa — salida urgente'
         : 'Precio bajo EMA200 — fuera de tendencia',
       alertas: [], cantidadAlertas: 0,
-      detalles: { precio: datos.precio, regimen: 'BAJISTA', fuerza: 'DEBIL',
-        distEma200: pct(datos.precio, datos.ema200).toFixed(2) + '%' }
+      detalles: {
+        precio: datos.precio, zonaActiva: null, enZona: false,
+        distEMA20: 'N/D', distWMA50: 'N/D', distWMA100: 'N/D',
+        distEma200: pct(datos.precio, datos.ema200).toFixed(2) + '%',
+        stochRsi: datos.stochRsi, volumenRatio: datos.ratioVolumen,
+        pendienteEMA200: datos.pendienteEMA200, macroEstado: datos.macroEstado,
+        regimen: null, fuerza: null, pullbackReal: null,
+        pullbackRetroceso: null, pullbackVelasRojas: null, condiciones7: null
+      }
     };
   }
 
-  // ─── Evaluaciones base ────────────────────────────────────────────────────
-  const regimen  = evaluarRegimen(datos);
-  const fuerza   = evaluarFuerzaRelativa(datos);
-  const stoch    = evaluarStochRSIDetallado(datos.stochRsi, datos.stochRsiPrev);
-  const spx      = evaluarSPX(datos.spxPrecio, datos.spxEma20);
-  const patron   = detectarPatronesVela(datos.velas);
-  const volumen  = evaluarVolumen(datos.velas?.[datos.velas.length-1], datos.velas);
-  const vela     = evaluarVela(datos.velas?.[datos.velas.length-1]);
+  // ── Evaluaciones base (para badges y detalles) ─────────────────────────────
+  const velaActual = datos.velas?.[datos.velas.length - 1];
+  const vela    = evaluarVela(velaActual);
+  const volumen = evaluarVolumen(velaActual, datos.velas);
+  const stoch   = evaluarStochRSIDetallado(datos.stochRsi, datos.stochRsiPrev);
+  const spx     = evaluarSPX(datos.spxPrecio, datos.spxEma20);
+  const patron  = detectarPatronesVela(datos.velas);
 
-  // Alerta temprana Mansfield (solo informativa, nunca genera compra)
-  const alertaMansfield = (datos.mansfieldSemanal?.pendiente ?? 0) > 0
-    && (datos.mansfieldSemanal?.mrs_anterior ?? 0) <= 0;
-
-  // ─── Alertas (badges) ─────────────────────────────────────────────────────
+  // ── Badges informativos ────────────────────────────────────────────────────
   const alertas = [];
+
   if (spx.favorable)
-    alertas.push({ icono: '📈', tipo: 'SPX_FAVORABLE',   mensaje: `SPX favorable (${spx.distancia?.toFixed(2)}%)` });
+    alertas.push({ icono: '📈', tipo: 'SPX_FAVORABLE', mensaje: `SPX favorable (${spx.distancia?.toFixed(2)}%)` });
   if (vela.esVerde)
-    alertas.push({ icono: vela.conCuerpo ? '🟢' : '🟩',  tipo: 'VELA_VERDE', mensaje: vela.conCuerpo ? 'Vela verde cuerpo' : 'Vela verde' });
+    alertas.push({ icono: vela.conCuerpo ? '🟢' : '🟩', tipo: 'VELA_VERDE',
+      mensaje: vela.conCuerpo ? `Vela verde cuerpo (${(vela.ratio*100).toFixed(0)}%)` : 'Vela verde' });
   if (volumen.superior)
     alertas.push({ icono: volumen.muyAlto ? '🔊' : '🔉', tipo: 'VOLUMEN', mensaje: `Vol ${volumen.ratio}x` });
   if (patron)
     alertas.push({ icono: patron.icono, tipo: patron.patron, mensaje: patron.nombre });
-  if (fuerza === 'LIDERAZGO_FUERTE' || fuerza === 'LIDERAZGO_MODERADO')
-    alertas.push({ icono: '💪', tipo: 'RSC_FUERTE', mensaje: `Mansfield ${(datos.mansfieldSemanal?.valor ?? datos.rsc?.valor ?? 0).toFixed(1)}` });
+
+  // Mansfield alert: pendiente semanal pasa de negativa a positiva
+  const alertaMansfield = (datos.mansfieldSemanal?.pendiente ?? 0) > 0
+    && (datos.mansfieldSemanal?.mrs_anterior ?? 0) <= 0;
   if (alertaMansfield)
-    alertas.push({ icono: '🔔', tipo: 'ALERTA_MANSFIELD', mensaje: 'Mansfield girando ↑ (vigilar)' });
-  if (regimen === 'ALCISTA_FUERTE')
-    alertas.push({ icono: '🚀', tipo: 'REGIMEN_FUERTE', mensaje: 'Régimen alcista fuerte' });
-  if (stoch.giroValido)
-    alertas.push({ icono: '📊', tipo: 'STOCH_GIRO', mensaje: `StochRSI ${stoch.valor?.toFixed(1)} giro ↑` });
+    alertas.push({ icono: '🔔', tipo: 'ALERTA_MANSFIELD', mensaje: 'Mansfield girando ↑ desde negativo' });
 
-  let senal = 'MANTENER';
-  let razon = '';
+  const mrsVal = datos.mansfieldSemanal?.valor ?? datos.rsc?.valor ?? null;
+  if (mrsVal !== null && mrsVal > 5 && (datos.mansfieldSemanal?.pendiente ?? 0) > 0)
+    alertas.push({ icono: '💪', tipo: 'RSC_FUERTE', mensaje: `Mansfield ${mrsVal.toFixed(1)}` });
 
-  // ─── PASO 2: Régimen ──────────────────────────────────────────────────────
-  if (regimen === 'BAJISTA') {
-    senal = 'VENDER'; razon = 'Régimen bajista — precio bajo EMA200';
-    return _resultado(datos.ticker, senal, razon, alertas, datos, regimen, fuerza, null, stoch);
-  }
-  if (regimen === 'NEUTRAL') {
-    senal = 'MANTENER';
-    razon = `Régimen neutral — EMA200 plana (${(datos.pendienteEMA200 || 0).toFixed(3)}% cambio 10d)`;
-    return _resultado(datos.ticker, senal, razon, alertas, datos, regimen, fuerza, null, stoch);
+  // ── PASO 2: ¿Está en zona de soporte ±3%? ─────────────────────────────────
+  const zona = detectarZonaSoporte(datos);
+
+  if (!zona.enZona) {
+    return _resultado(ticker, 'MANTENER',
+      `Fuera de zona soporte | EMA20:${zona.distEMA20} WMA50:${zona.distWMA50} WMA100:${zona.distWMA100}`,
+      alertas, datos, zona);
   }
 
-  // ─── PASO 3: Fuerza relativa ──────────────────────────────────────────────
-  if (fuerza === 'DEBIL') {
-    const mrsVal = (datos.mansfieldSemanal?.valor ?? datos.rsc?.valor ?? null);
-    const aviso  = alertaMansfield ? ' 🔔 Mansfield girando, vigilar' : '';
-    senal = 'MANTENER';
-    razon = `Mansfield ${mrsVal !== null ? mrsVal.toFixed(2) : 'N/D'} — sin liderazgo vs mercado${aviso}`;
-    return _resultado(datos.ticker, senal, razon, alertas, datos, regimen, fuerza, null, stoch);
+  // Badge zona soporte
+  alertas.unshift({ icono: '🎯', tipo: 'ZONA_SOPORTE',
+    mensaje: `En zona ${zona.zonaActiva} (dist:${zona['dist' + zona.zonaActiva] || ''})` });
+
+  // ── PASO 3: ¿Vela verde de confirmación? ──────────────────────────────────
+  if (!vela.esVerde) {
+    return _resultado(ticker, 'VIGILAR_PULLBACK',
+      `Precio en zona ${zona.zonaActiva} — esperar vela verde de confirmación`,
+      alertas, datos, zona);
   }
 
-  // ─── PASO 4: Pullback REAL obligatorio ────────────────────────────────────
-  const pullReal = verificarPullbackReal(datos);
+  // ── PASO 4: Vela verde → calidad de entrada ────────────────────────────────
+  const stochValido = (
+    Number.isFinite(datos.stochRsi) &&
+    datos.stochRsi >= 40 && datos.stochRsi <= 70 &&
+    Number.isFinite(datos.stochRsiPrev) &&
+    datos.stochRsi > datos.stochRsiPrev
+  );
+  const volumenFuerte = (datos.ratioVolumen || 0) >= 1.2;
 
-  if (!pullReal.real) {
-    // Añadir badge 🎯 solo si hay alguna proximidad a soporte
-    const distW20 = isValid(datos.wma20) ? Math.abs(pct(datos.precio, datos.wma20)) : 999;
-    if (distW20 < 5) {
-      alertas.push({ icono: '🎯', tipo: 'CERCA_SOPORTE', mensaje: `A ${distW20.toFixed(1)}% de WMA20 — esperar retroceso` });
-    }
+  if (stochValido)
+    alertas.push({ icono: '📊', tipo: 'STOCH_GIRO',
+      mensaje: `StochRSI ${datos.stochRsi?.toFixed(1)} giro ↑ (zona 40-70)` });
 
-    let falta = [];
-    if (!pullReal.pc0a) falta.push(`retroceso solo ${pullReal.retroceso.toFixed(1)}% (necesita ≥2%)`);
-    if (!pullReal.pc0b) falta.push(`solo ${pullReal.velasRojas}/5 velas rojas (necesita ≥2)`);
-    if (!pullReal.pc0c) falta.push('precio alejándose de WMA20 (impulso, no pullback)');
+  let senal, razon;
 
-    senal = 'MANTENER';
-    razon = `Sin pullback real: ${falta.join(' · ')}`;
-    return _resultado(datos.ticker, senal, razon, alertas, datos, regimen, fuerza, pullReal, stoch);
-  }
-
-  // Confirmado que hay pullback real → añadir badge
-  alertas.unshift({ icono: '🎯', tipo: 'PULLBACK_REAL', mensaje: `Pullback ${pullReal.retroceso.toFixed(1)}% desde máx, ${pullReal.velasRojas}/5 velas rojas` });
-
-  // ─── PASO 5: Calidad de la entrada (7 condiciones) ────────────────────────
-  const cond7    = evaluar7Condiciones(datos, regimen, fuerza, stoch);
-  const cumple7  = Object.values(cond7).filter(Boolean).length;
-  const faltanK  = Object.entries(cond7).filter(([, v]) => !v).map(([k]) => NOMBRES_COND[k]);
-
-  if (cumple7 === 7) {
+  if (vela.conCuerpo && stochValido && volumenFuerte) {
     senal = 'COMPRA_FUERTE';
-    razon = 'Confluencia perfecta: pullback real + 7/7 condiciones';
-  } else if (cumple7 === 6) {
+    razon = `Zona ${zona.zonaActiva} + vela cuerpo ${(vela.ratio*100).toFixed(0)}% + StochRSI ${datos.stochRsi?.toFixed(1)} giro↑ + vol ${volumen.ratio}x`;
+  } else if (vela.conCuerpo && stochValido) {
     senal = 'COMPRA';
-    razon = `Pullback real + 6/7 — falta: ${faltanK[0]}`;
-  } else if (cumple7 === 5) {
+    razon = `Zona ${zona.zonaActiva} + vela cuerpo ${(vela.ratio*100).toFixed(0)}% + StochRSI ${datos.stochRsi?.toFixed(1)} giro↑`;
+  } else if (vela.conCuerpo) {
     senal = 'COMPRA_PARCIAL';
-    razon = `Pullback real + 5/7 — faltan: ${faltanK.join(', ')}`;
+    razon = `Zona ${zona.zonaActiva} + vela cuerpo ${(vela.ratio*100).toFixed(0)}% (StochRSI ${datos.stochRsi?.toFixed(1)} no en 40-70↑)`;
   } else {
-    senal = 'VIGILAR_PULLBACK';
-    razon = `Pullback real pero solo ${cumple7}/7 condiciones — ${faltanK.slice(0,3).join(', ')}`;
+    senal = 'COMPRA_PARCIAL';
+    razon = `Zona ${zona.zonaActiva} + vela verde sin cuerpo suficiente (ratio:${(vela.ratio*100).toFixed(0)}%)`;
   }
 
-  // ─── PASO 6: Ajustes finales ──────────────────────────────────────────────
-
-  // Macro ROJO → bajar un nivel
-  const COMPRAS = ['COMPRA_FUERTE', 'COMPRA', 'COMPRA_PARCIAL'];
-  if (datos.macroEstado === 'ROJO' && COMPRAS.includes(senal)) {
-    const prev = senal;
-    if (senal === 'COMPRA_FUERTE') senal = 'COMPRA';
-    else if (senal === 'COMPRA')   senal = 'COMPRA_PARCIAL';
-    else                           senal = 'VIGILAR_PULLBACK';
-    if (senal !== prev) razon = '🔴 Macro ROJO → ' + razon;
-  }
-
-  // Nasdaq débil + tech → bajar un nivel
-  if (datos.nasdaqDebil && datos.isTech && COMPRAS.includes(senal)) {
-    const prev = senal;
-    if (senal === 'COMPRA_FUERTE') senal = 'COMPRA';
-    else if (senal === 'COMPRA')   senal = 'COMPRA_PARCIAL';
-    else                           senal = 'VIGILAR_PULLBACK';
-    if (senal !== prev) razon = '📉 Nasdaq débil → ' + razon;
-  }
-
-  // RSC perdió liderazgo
-  if (datos.rsc?.perdioLiderazgo) razon = '⚠️ PIERDE LIDERAZGO → ' + razon;
-
-  return _resultado(datos.ticker, senal, razon, alertas, datos, regimen, fuerza, pullReal, stoch, cond7, cumple7);
+  return _resultado(ticker, senal, razon, alertas, datos, zona);
 }
 
-// ─── Helper resultado ─────────────────────────────────────────────────────────
+// ── Helper resultado ───────────────────────────────────────────────────────────
 
-function _resultado(ticker, senal, razon, alertas, datos, regimen, fuerza, pullReal, stoch, cond7, cumple7) {
+function _resultado(ticker, senal, razon, alertas, datos, zona) {
   return {
     ticker, senal, razon, alertas,
     cantidadAlertas: alertas.length,
     detalles: {
-      precio:            datos.precio,
-      regimen,
-      fuerza,
-      pullbackReal:      pullReal?.real ?? null,
-      pullbackRetroceso: pullReal?.retroceso ?? null,
-      pullbackVelasRojas:pullReal?.velasRojas ?? null,
-      condiciones7:      cumple7 != null ? `${cumple7}/7` : null,
-      cond7,
-      stochZona:         stoch?.zona,
-      stochGiro:         stoch?.giroValido,
-      distEma200:        isValid(datos.ema200) ? pct(datos.precio, datos.ema200).toFixed(2) + '%' : 'N/D',
-      distWMA20:         isValid(datos.wma20)  ? pct(datos.precio, datos.wma20).toFixed(2)  + '%' : 'N/D',
-      distWMA50:         isValid(datos.wma50)  ? pct(datos.precio, datos.wma50).toFixed(2)  + '%' : 'N/D',
-      mansfieldSemanal:  datos.mansfieldSemanal?.valor    ?? null,
-      mansfieldPend:     datos.mansfieldSemanal?.pendiente ?? null,
-      rscDiario:         datos.rsc?.valor ?? null,
-      stochRsi:          datos.stochRsi,
-      volumenRatio:      datos.ratioVolumen,
-      pendienteEMA200:   datos.pendienteEMA200,
-      macroEstado:       datos.macroEstado
+      precio:          datos.precio,
+      zonaActiva:      zona?.zonaActiva   ?? null,
+      enZona:          zona?.enZona       ?? false,
+      distEMA20:       zona?.distEMA20    ?? (isValid(datos.ema20)  ? pct(datos.precio, datos.ema20).toFixed(2)  + '%' : 'N/D'),
+      distWMA50:       zona?.distWMA50    ?? (isValid(datos.wma50)  ? pct(datos.precio, datos.wma50).toFixed(2)  + '%' : 'N/D'),
+      distWMA100:      zona?.distWMA100   ?? (isValid(datos.wma100) ? pct(datos.precio, datos.wma100).toFixed(2) + '%' : 'N/D'),
+      distEma200:      isValid(datos.ema200) ? pct(datos.precio, datos.ema200).toFixed(2) + '%' : 'N/D',
+      stochRsi:        datos.stochRsi,
+      volumenRatio:    datos.ratioVolumen,
+      pendienteEMA200: datos.pendienteEMA200,
+      macroEstado:     datos.macroEstado,
+      // Campos backward compat (ya no se calculan)
+      regimen:            null,
+      fuerza:             null,
+      pullbackReal:       null,
+      pullbackRetroceso:  null,
+      pullbackVelasRojas: null,
+      condiciones7:       null
     }
   };
 }
@@ -439,12 +349,8 @@ module.exports = {
   evaluarVela,
   evaluarVolumen,
   detectarPatronesVela,
+  detectarZonaSoporte,
   evaluarSPX,
-  subirSenal,
-  evaluarRegimen,
-  evaluarFuerzaRelativa,
   evaluarStochRSIDetallado,
-  verificarPullbackReal,
-  evaluar7Condiciones,
   PRIORIDAD_SENAL
 };
