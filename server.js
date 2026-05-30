@@ -58,10 +58,19 @@ const dataSchema = new mongoose.Schema({
   ema50:          Number,
   ema200:         Number,
   stochRsi:       Number,
-  ema100:          Number,
-  rsc:             { type: Number, default: null },
-  rscSubiendo:     { type: Boolean, default: null },
-  rscHace5:        { type: Number, default: null },
+  ema100:                Number,
+  wma20:                 { type: Number, default: null },
+  wma50:                 { type: Number, default: null },
+  wma100:                { type: Number, default: null },
+  pendienteEMA200:       { type: Number, default: null },
+  smaVol20:              { type: Number, default: null },
+  ratioVolumen:          { type: Number, default: null },
+  mansfieldSemanal_valor:    { type: Number, default: null },
+  mansfieldSemanal_pendiente:{ type: Number, default: null },
+  regimen:               { type: String, default: null },
+  rsc:                   { type: Number, default: null },
+  rscSubiendo:           { type: Boolean, default: null },
+  rscHace5:              { type: Number, default: null },
   senal:          { type: String, default: 'SIN_DATOS' },
   razon:          { type: String, default: '' },
   alertas:        { type: Array,  default: [] },
@@ -210,6 +219,85 @@ async function fetchYahooNews(symbol) {
 // ── Indicadores ────────────────────────────────────────────────────────────────
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// WMA (Weighted Moving Average)
+function calcWMA(closes, period) {
+  if (closes.length < period) return null;
+  const slice = closes.slice(-period);
+  let num = 0, den = 0;
+  for (let i = 0; i < period; i++) { const w = i + 1; num += slice[i] * w; den += w; }
+  return +(num / den).toFixed(4);
+}
+
+// Pendiente EMA200: % cambio vs hace 10 días
+function calcPendienteEMA200(closes) {
+  if (closes.length < 210) return null;
+  const hoy    = calcEMA(closes, 200);
+  const hace10 = calcEMA(closes.slice(0, -10), 200);
+  if (!hoy || !hace10) return null;
+  return +((hoy - hace10) / hace10 * 100).toFixed(4);
+}
+
+// SMA de volumen (últimos n, excluyendo vela actual)
+function calcSMAVolumen(velas, period = 20) {
+  if (velas.length < period + 1) return null;
+  const vols = velas.slice(-period - 1, -1).map(v => v.volume || 0);
+  return vols.reduce((a, b) => a + b, 0) / period;
+}
+
+// Agrupa velas diarias en semanales (cierre del último día de la semana)
+function agruparSemanal(velas) {
+  const semanas = {};
+  for (const v of velas) {
+    const d = new Date(v.time * 1000);
+    const day = d.getDay(); // 0=Dom
+    const diff = day === 0 ? -6 : 1 - day;
+    const lun = new Date(d); lun.setDate(d.getDate() + diff);
+    const key = lun.toISOString().slice(0, 10);
+    if (!semanas[key]) {
+      semanas[key] = { ...v };
+    } else {
+      semanas[key].high   = Math.max(semanas[key].high, v.high || 0);
+      semanas[key].low    = Math.min(semanas[key].low,  v.low  || 0);
+      semanas[key].close  = v.close;
+      semanas[key].volume = (semanas[key].volume || 0) + (v.volume || 0);
+    }
+  }
+  return Object.values(semanas).sort((a, b) => a.time - b.time);
+}
+
+// RSC Mansfield semanal (MRS con SMA52)
+function calcMansieldSemanal(velasAccion, velasSPX) {
+  const semA = agruparSemanal(velasAccion);
+  const semS = agruparSemanal(velasSPX);
+  const n    = Math.min(semA.length, semS.length);
+  if (n < 52) return null;
+
+  const drs = [];
+  for (let i = 0; i < n; i++) {
+    if (!semS[i].close || semS[i].close <= 0) return null;
+    drs.push(semA[i].close / semS[i].close);
+  }
+
+  // MRS actual: DRS[-1] / SMA(DRS[-52:]) - 1
+  const sma52    = drs.slice(-52).reduce((a, b) => a + b, 0) / 52;
+  if (!sma52) return null;
+  const mrs_actual = ((drs[n-1] / sma52) - 1) * 100;
+
+  // MRS anterior: usa misma sma52 como aproximación (n puede ser solo 52)
+  const mrs_anterior = n >= 53
+    ? (() => {
+        const s = drs.slice(-53, -1).reduce((a, b) => a + b, 0) / 52;
+        return s ? ((drs[n-2] / s) - 1) * 100 : null;
+      })()
+    : null;
+
+  return {
+    valor:       +mrs_actual.toFixed(2),
+    pendiente:   mrs_anterior !== null ? +(mrs_actual - mrs_anterior).toFixed(2) : 0,
+    mrs_anterior: mrs_anterior !== null ? +mrs_anterior.toFixed(2) : null
+  };
+}
 
 function calcEMA(closes, period) {
   if (closes.length < period) return null;
@@ -378,25 +466,48 @@ async function fetchAndCalc(symbol) {
   const ema50    = calcEMA(closesAct, 50);
   const ema100   = calcEMA(closesAct, 100);
   const ema200   = calcEMA(closesAct, 200);
-  const stochRsi = calcStochRSI(closesAct);
+  const stochRsi     = calcStochRSI(closesAct);
+  const stochRsiPrev = calcStochRSI(closesAct.slice(0, -1));
   const hoyPct   = last.open > 0 ? +((precio - last.open) / last.open * 100).toFixed(2) : 0;
 
-  // RSC Mansfield — alinear precios por longitud
-  const spxClosesAligned = spxVelas.slice(-closesAct.length).map(c => c.close);
-  const rscData = calcularRSCMansfield(closesAct, spxClosesAligned);
+  // WMA
+  const wma20  = calcWMA(closesAct, 20);
+  const wma50  = calcWMA(closesAct, 50);
+  const wma100 = calcWMA(closesAct, 100);
+
+  // Pendiente EMA200
+  const pendienteEMA200 = calcPendienteEMA200(closesAct);
+
+  // Volumen
+  const smaVol20   = calcSMAVolumen(velasActualizadas, 20);
+  const ratioVol   = smaVol20 && smaVol20 > 0
+    ? +((last.volume || 0) / smaVol20).toFixed(2) : 1;
+
+  // RSC Mansfield — diario (alinear por longitud)
+  const spxClosesAligned  = spxVelas.slice(-closesAct.length).map(c => c.close);
+  const rscData           = calcularRSCMansfield(closesAct, spxClosesAligned);
+
+  // RSC Mansfield — semanal
+  const mansfieldSemanal  = spxVelas.length >= 5
+    ? calcMansieldSemanal(velasActualizadas, spxVelas)
+    : null;
 
   const resultado = evaluarActivo({
-    ticker:   symbol,
+    ticker: symbol,
     precio,
     ema20, ema50, ema100, ema200,
-    stochRsi,
-    velas:    velasActualizadas,
-    spxPrecio:   spxState.precio,
-    spxEma20:    spxState.ema20,
-    rsc:         rscData,
-    macroEstado: macroState.semaforo,
-    nasdaqDebil: macroState.nasdaq?.debil || false,
-    isTech:      TECH_TICKERS.has(symbol)
+    wma20, wma50, wma100,
+    pendienteEMA200,
+    stochRsi, stochRsiPrev,
+    ratioVolumen: ratioVol,
+    velas:        velasActualizadas,
+    rsc:          rscData,
+    mansfieldSemanal,
+    spxPrecio:    spxState.precio,
+    spxEma20:     spxState.ema20,
+    macroEstado:  macroState.semaforo,
+    nasdaqDebil:  macroState.nasdaq?.debil || false,
+    isTech:       TECH_TICKERS.has(symbol)
   });
 
   return {
@@ -408,10 +519,17 @@ async function fetchAndCalc(symbol) {
     volume: last.volume,
     hoyPct,
     ema20, ema50, ema100, ema200,
+    wma20, wma50, wma100,
+    pendienteEMA200,
+    smaVol20,
+    ratioVolumen:  ratioVol,
     stochRsi,
+    mansfieldSemanal_valor:     mansfieldSemanal?.valor    ?? null,
+    mansfieldSemanal_pendiente: mansfieldSemanal?.pendiente ?? null,
     rsc:         rscData?.valor    ?? null,
     rscSubiendo: rscData?.subiendo ?? null,
     rscHace5:    rscData?.hace5    ?? null,
+    regimen:     resultado.detalles?.regimen || null,
     senal:          resultado.senal,
     razon:          resultado.razon || '',
     alertas:        resultado.alertas || [],
