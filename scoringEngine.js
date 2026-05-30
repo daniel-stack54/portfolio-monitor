@@ -159,23 +159,8 @@ function detectarZonaSoporte(datos) {
   const { precio, ema20, wma50, wma100 } = datos;
   const MARGEN = 0.03;
 
-  // ── COMPROBACIÓN PREVIA OBLIGATORIA ──────────────────────────────────────
-  // Si el precio está más de 3% POR ENCIMA de EMA20, el activo está extendido
-  // al alza. No hay pullback posible → bloquear cualquier señal de compra.
-  if (isValid(ema20)) {
-    const distEMA20raw = (precio - ema20) / ema20 * 100;
-    if (distEMA20raw > 3) {
-      return {
-        enZona: false, zonaActiva: null,
-        enEMA20: false, enWMA50: false, enWMA100: false,
-        distEMA20:  distEMA20raw.toFixed(2) + '%',
-        distWMA50:  isValid(wma50)  ? pct(precio, wma50).toFixed(2)  + '%' : 'N/D',
-        distWMA100: isValid(wma100) ? pct(precio, wma100).toFixed(2) + '%' : 'N/D',
-        razon: `Precio extendido sobre EMA20: +${distEMA20raw.toFixed(1)}%`
-      };
-    }
-  }
-
+  // enZona = TRUE si precio está dentro de ±3% de AL MENOS UNA media.
+  // El bloqueo "precio extendido sobre todas" ya se aplica en PASO 0 de evaluarActivo.
   const enEMA20  = isValid(ema20)  && precio >= ema20  * (1 - MARGEN) && precio <= ema20  * (1 + MARGEN);
   const enWMA50  = isValid(wma50)  && precio >= wma50  * (1 - MARGEN) && precio <= wma50  * (1 + MARGEN);
   const enWMA100 = isValid(wma100) && precio >= wma100 * (1 - MARGEN) && precio <= wma100 * (1 + MARGEN);
