@@ -3,7 +3,7 @@ services:
     name: stock-monitor
     runtime: node
     buildCommand: npm install
-    startCommand: node server.js
+    startCommand: npm start
     envVars:
       - key: MONGODB_URI
         sync: false
