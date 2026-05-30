@@ -6,14 +6,19 @@ const mongoose   = require('mongoose');
 const axios      = require('axios');
 const path       = require('path');
 
-const { evaluarActivo, ordenarPorFuerzaSenal } = require('./scoringEngine');
+const { evaluarActivo, ordenarPorFuerzaSenal, calcularRSCMansfield } = require('./scoringEngine');
 const { PORTFOLIO_PERSONAL, calcularPesosPortfolio } = require('./portfolio');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'electron')));
+app.use(express.static(path.join(__dirname, 'electron'), {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('manifest.json')) res.setHeader('Content-Type', 'application/manifest+json');
+    if (filePath.endsWith('sw.js')) { res.setHeader('Service-Worker-Allowed', '/'); res.setHeader('Cache-Control', 'no-cache'); }
+  }
+}));
 
 // ── MongoDB ────────────────────────────────────────────────────────────────────
 
@@ -54,6 +59,9 @@ const dataSchema = new mongoose.Schema({
   ema200:         Number,
   stochRsi:       Number,
   ema100:          Number,
+  rsc:             { type: Number, default: null },
+  rscSubiendo:     { type: Boolean, default: null },
+  rscHace5:        { type: Number, default: null },
   senal:          { type: String, default: 'SIN_DATOS' },
   razon:          { type: String, default: '' },
   alertas:        { type: Array,  default: [] },
@@ -250,7 +258,15 @@ function calcStochRSI(closes, rsiPeriod = 14, stochPeriod = 14, smoothK = 3) {
 
 // ── Estado SPX ─────────────────────────────────────────────────────────────────
 
-let spxState = { precio: NaN, ema20: NaN, dist: NaN, estado: 'DESCONOCIDO' };
+let spxState  = { precio: NaN, ema20: NaN, dist: NaN, estado: 'DESCONOCIDO' };
+let spxVelas  = [];
+let macroState = { semaforo: 'DESCONOCIDO', spx: {}, nyse: {}, nasdaq: {}, vix: {}, updatedAt: null };
+
+const TECH_TICKERS = new Set([
+  'CRDO','FN','CIEN','LITE','STX','SNDK','TER','COHR','ANET','WDC',
+  'KLAC','AMAT','LRCX','AMD','INTC','MU','SITM','TSEM','ORCL','DELL',
+  'AVGO','NVMI','MKSI','GLW','VRT','APP','NVDA','NVDA'
+]);
 
 async function updateSPX() {
   try {
@@ -268,10 +284,70 @@ async function updateSPX() {
       else if (dist > 2.5)                estado = 'EXTENDIDO';
       else                                estado = 'CORRECCION_FUERTE';
     }
-    spxState = { precio, ema20, dist, estado };
+    spxVelas  = velas;   // guardamos para RSC Mansfield
+    spxState  = { precio, ema20, dist, estado };
     console.log(`[SPX] SPY=${precio?.toFixed(2)} EMA20=${ema20?.toFixed(2)} dist=${dist?.toFixed(2)}% → ${estado}`);
   } catch (e) {
     console.warn('[SPX] Error:', e.message);
+  }
+}
+
+// ── Panel Macro ────────────────────────────────────────────────────────────────
+
+async function updateMacro() {
+  try {
+    const [velasNYA, velasNDX, velasVIX] = await Promise.all([
+      fetchCandles('^NYA').catch(() => []),
+      fetchCandles('^IXIC').catch(() => []),
+      fetchCandles('^VIX').catch(() => [])
+    ]);
+
+    // SPX vs EMA150 (usa spxVelas ya cargadas)
+    const spxCloses = spxVelas.map(v => v.close);
+    const spxEma150 = spxCloses.length >= 150 ? calcEMA(spxCloses, 150) : null;
+    const spxP      = spxCloses.length ? spxCloses[spxCloses.length - 1] : null;
+    const spxD150   = spxP && spxEma150 ? (spxP - spxEma150) / spxEma150 * 100 : null;
+    const spxEncima = spxD150 !== null && spxD150 > 0;
+
+    // NYSE vs EMA200
+    const nyaC    = velasNYA.map(v => v.close);
+    const nyaEma  = nyaC.length >= 200 ? calcEMA(nyaC, 200) : null;
+    const nyaP    = nyaC.length ? nyaC[nyaC.length - 1] : null;
+    const nyaD    = nyaP && nyaEma ? (nyaP - nyaEma) / nyaEma * 100 : null;
+    const nyaEnc  = nyaP && nyaEma ? nyaP > nyaEma : false;
+
+    // Nasdaq vs EMA50
+    const ndxC    = velasNDX.map(v => v.close);
+    const ndxEma  = ndxC.length >= 50  ? calcEMA(ndxC, 50)  : null;
+    const ndxP    = ndxC.length ? ndxC[ndxC.length - 1] : null;
+    const ndxD    = ndxP && ndxEma ? (ndxP - ndxEma) / ndxEma * 100 : null;
+    const ndxDebil = ndxP && ndxEma ? ndxP < ndxEma : false;
+
+    // VIX
+    const vixC    = velasVIX.map(v => v.close);
+    const vixP    = vixC.length ? vixC[vixC.length - 1] : null;
+    const vixEst  = vixP == null ? 'DESCONOCIDO'
+                  : vixP < 15   ? 'COMPLACENCIA'
+                  : vixP < 20   ? 'NORMAL'
+                  : vixP < 30   ? 'MIEDO'
+                  : 'PANICO';
+
+    // Semáforo global
+    let semaforo = 'AMARILLO';
+    if (spxEncima && nyaEnc && vixP !== null && vixP < 20)          semaforo = 'VERDE';
+    else if (!spxEncima || (vixP !== null && vixP > 30))            semaforo = 'ROJO';
+
+    macroState = {
+      semaforo,
+      spx:    { precio: spxP,  ema150: spxEma150, dist: spxD150, encima: spxEncima },
+      nyse:   { precio: nyaP,  ema200: nyaEma,    dist: nyaD,   encima: nyaEnc },
+      nasdaq: { precio: ndxP,  ema50:  ndxEma,    dist: ndxD,   debil:  ndxDebil },
+      vix:    { valor:  vixP,  estado: vixEst },
+      updatedAt: new Date()
+    };
+    console.log(`[MACRO] ${semaforo} | VIX=${vixP?.toFixed(1)||'N/D'} ${vixEst} | NYSE ${nyaEnc?'▲':'▼'} EMA200 | NDX ${ndxDebil?'DÉBIL':'OK'}`);
+  } catch (e) {
+    console.error('[MACRO] Error:', e.message);
   }
 }
 
@@ -305,14 +381,22 @@ async function fetchAndCalc(symbol) {
   const stochRsi = calcStochRSI(closesAct);
   const hoyPct   = last.open > 0 ? +((precio - last.open) / last.open * 100).toFixed(2) : 0;
 
+  // RSC Mansfield — alinear precios por longitud
+  const spxClosesAligned = spxVelas.slice(-closesAct.length).map(c => c.close);
+  const rscData = calcularRSCMansfield(closesAct, spxClosesAligned);
+
   const resultado = evaluarActivo({
     ticker:   symbol,
     precio,
     ema20, ema50, ema100, ema200,
     stochRsi,
     velas:    velasActualizadas,
-    spxPrecio: spxState.precio,
-    spxEma20:  spxState.ema20
+    spxPrecio:   spxState.precio,
+    spxEma20:    spxState.ema20,
+    rsc:         rscData,
+    macroEstado: macroState.semaforo,
+    nasdaqDebil: macroState.nasdaq?.debil || false,
+    isTech:      TECH_TICKERS.has(symbol)
   });
 
   return {
@@ -325,6 +409,9 @@ async function fetchAndCalc(symbol) {
     hoyPct,
     ema20, ema50, ema100, ema200,
     stochRsi,
+    rsc:         rscData?.valor    ?? null,
+    rscSubiendo: rscData?.subiendo ?? null,
+    rscHace5:    rscData?.hace5    ?? null,
     senal:          resultado.senal,
     razon:          resultado.razon || '',
     alertas:        resultado.alertas || [],
@@ -346,6 +433,7 @@ async function updateAll() {
   _updating = true;
   try {
     await updateSPX();
+    await updateMacro();
     const stocks = await Stock.find();
     for (const s of stocks) {
       try {
@@ -412,14 +500,34 @@ app.get('/portfolio', async (req, res) => {
         : 0;
     }
 
-    const result = stocks.map(s => ({
-      symbol:        s.symbol,
-      empresa:       s.empresa,
-      acciones:      s.acciones,
-      precioEntrada: s.precioEntrada,
-      pesoPct:       pesosMap[s.symbol] || 0,
-      ...(map[s.symbol] || {})
-    }));
+    // Ranking RSC (mayor RSC = mejor fuerza relativa = rank #1)
+    const rscRanking = data
+      .filter(d => d.rsc !== null && d.rsc !== undefined)
+      .sort((a, b) => (b.rsc || -999) - (a.rsc || -999));
+    const rankMap = {};
+    rscRanking.forEach((d, i) => { rankMap[d.symbol] = i + 1; });
+
+    const result = stocks.map(s => {
+      const d       = map[s.symbol] || {};
+      const rscRank = rankMap[s.symbol] || null;
+
+      // Boost top 10 + RSC subiendo: COMPRA → COMPRA_FUERTE
+      let senal = d.senal || 'SIN_DATOS';
+      if (senal === 'COMPRA' && rscRank && rscRank <= 10 && d.rscSubiendo) {
+        senal = 'COMPRA_FUERTE';
+      }
+
+      return {
+        symbol:        s.symbol,
+        empresa:       s.empresa,
+        acciones:      s.acciones,
+        precioEntrada: s.precioEntrada,
+        pesoPct:       pesosMap[s.symbol] || 0,
+        ...d,
+        senal,
+        rscRank
+      };
+    });
 
     // Ordenar por fuerza de señal
     const ORDEN = { COMPRA_FUERTE:1, COMPRA:2, COMPRA_PARCIAL:3, VIGILAR_PULLBACK:4, VIGILAR_REBOTE:5, MANTENER:6, VENDER:7, SIN_DATOS:8 };
@@ -432,7 +540,8 @@ app.get('/portfolio', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/spx', (req, res) => res.json(spxState));
+app.get('/spx',   (req, res) => res.json(spxState));
+app.get('/macro', (req, res) => res.json(macroState));
 
 app.get('/alerts', async (req, res) => {
   try {

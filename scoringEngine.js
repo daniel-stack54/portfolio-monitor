@@ -241,6 +241,37 @@ function subirSenal(senal) {
 }
 
 // ============================================================================
+// RSC MANSFIELD — Fuerza Relativa de Stan Weinstein
+// ============================================================================
+// RP[i] = (precio_accion[i] / precio_SPX[i]) * 100
+// SMA_RP = media simple de los últimos 200 RP
+// RSC    = ((RP_hoy / SMA_RP) - 1) * 100
+
+function calcularRSCMansfield(preciosAccion, preciosSPX) {
+  const n = Math.min(preciosAccion.length, preciosSPX.length);
+  if (n < 200) return null;
+
+  const rp = [];
+  for (let i = n - 200; i < n; i++) {
+    if (!preciosSPX[i] || preciosSPX[i] <= 0) return null;
+    rp.push((preciosAccion[i] / preciosSPX[i]) * 100);
+  }
+
+  const smaRP = rp.reduce((a, b) => a + b, 0) / 200;
+  if (!smaRP) return null;
+
+  const rscHoy = ((rp[199] / smaRP) - 1) * 100;
+  const rsc5   = rp.length >= 6 ? ((rp[194] / smaRP) - 1) * 100 : null;
+
+  return {
+    valor:           +rscHoy.toFixed(2),
+    subiendo:        rsc5 !== null ? rscHoy > rsc5 : null,
+    hace5:           rsc5 !== null ? +rsc5.toFixed(2) : null,
+    perdioLiderazgo: rsc5 !== null && rscHoy < 0 && rsc5 > 0
+  };
+}
+
+// ============================================================================
 // FUNCIÓN PRINCIPAL — EVALUAR ACTIVO
 // ============================================================================
 
@@ -250,20 +281,21 @@ function evaluarActivo(datos) {
     return { ticker: datos.ticker || 'DESCONOCIDO', senal: 'SIN_DATOS', alertas: [], detalles: null };
   }
 
-  // ====== VETO ABSOLUTO ======
+  // ====== VETO EMA200 ======
   if (datos.precio < datos.ema200) {
     return {
-      ticker: datos.ticker,
-      senal:  'VENDER',
-      razon:  'Precio bajo EMA200 — fuera de tendencia',
-      alertas: [],
-      detalles: {
-        precio:   datos.precio,
-        ema200:   datos.ema200,
-        distEma200: pct(datos.precio, datos.ema200).toFixed(2) + '%'
-      }
+      ticker: datos.ticker, senal: 'VENDER',
+      razon: 'Precio bajo EMA200 — fuera de tendencia', alertas: [],
+      detalles: { precio: datos.precio, ema200: datos.ema200, distEma200: pct(datos.precio, datos.ema200).toFixed(2) + '%' }
     };
   }
+
+  // ====== RSC / MACRO ======
+  const rsc         = datos.rsc   || null;
+  const rscPositivo = rsc !== null && rsc.valor > 0;
+  const rscSubiendo = rsc !== null && rsc.subiendo === true;
+  const macroRojo   = datos.macroEstado === 'ROJO';
+  const nasdaqPena  = datos.nasdaqDebil === true && datos.isTech === true;
 
   // ====== DETECCIONES ======
   const pullback    = detectarPullbackEMA20(datos.precio, datos.ema20, datos.velas);
@@ -279,89 +311,105 @@ function evaluarActivo(datos) {
   const spx         = evaluarSPX(datos.spxPrecio, datos.spxEma20);
   const patron      = detectarPatronesVela(datos.velas);
 
-  // ====== ALERTAS ACUMULABLES ======
+  // ====== ALERTAS ======
   const alertas = [];
-
   if (pullback.enZona)  alertas.push({ icono: '🎯', tipo: 'PULLBACK_EMA20', mensaje: `Zona EMA20 (${pullback.distancia.toFixed(2)}%)` });
   if (stochRsi.enZona)  alertas.push({ icono: '📊', tipo: 'STOCH_RSI',      mensaje: `StochRSI ${stochRsi.valor.toFixed(1)}` });
   if (spx.favorable)    alertas.push({ icono: '📈', tipo: 'SPX_FAVORABLE',  mensaje: `SPX favorable (${spx.distancia.toFixed(2)}%)` });
   if (vela.esVerde)     alertas.push({ icono: vela.conCuerpo ? '🟢' : '🟩', tipo: vela.conCuerpo ? 'VELA_VERDE_FUERTE' : 'VELA_VERDE', mensaje: vela.conCuerpo ? 'Vela verde con cuerpo' : 'Vela verde' });
   if (volumen.superior) alertas.push({ icono: volumen.muyAlto ? '🔊' : '🔉', tipo: volumen.muyAlto ? 'VOLUMEN_ALTO' : 'VOLUMEN_SUPERIOR', mensaje: `Volumen ${volumen.ratio}x` });
   if (patron)           alertas.push({ icono: patron.icono, tipo: patron.patron, mensaje: patron.nombre });
+  if (rscSubiendo)      alertas.push({ icono: '💪', tipo: 'RSC_SUBIENDO', mensaje: `RSC ${rsc.valor.toFixed(2)} subiendo` });
 
-  // ====== DECISIÓN DE SEÑAL ======
+  // ====== SEÑAL BASE ======
   let senal = 'MANTENER';
   let razon = '';
 
-  // 1) ROTURA EMA50 AL ALZA
   if (rotura50.rotura && vela.esVerde) {
-    if (vela.conCuerpo && volumen.superior) { senal = 'COMPRA_FUERTE'; razon = 'Rotura EMA50 al alza + vela cuerpo + volumen'; }
-    else if (vela.conCuerpo)               { senal = 'COMPRA';        razon = 'Rotura EMA50 al alza + vela verde con cuerpo'; }
-    else if (volumen.superior)             { senal = 'COMPRA';        razon = 'Rotura EMA50 al alza + vela verde + volumen'; }
-    else                                   { senal = 'COMPRA_PARCIAL'; razon = 'Rotura EMA50 al alza + vela verde'; }
-  }
-  // 2) PULLBACK ZONA EMA20 + CONFIRMACIÓN
-  else if (pullback.enZona && vela.esVerde) {
+    if (vela.conCuerpo && volumen.superior) { senal = 'COMPRA_FUERTE'; razon = 'Rotura EMA50 + vela cuerpo + volumen'; }
+    else if (vela.conCuerpo)               { senal = 'COMPRA';        razon = 'Rotura EMA50 + vela con cuerpo'; }
+    else if (volumen.superior)             { senal = 'COMPRA';        razon = 'Rotura EMA50 + vela + volumen'; }
+    else                                   { senal = 'COMPRA_PARCIAL'; razon = 'Rotura EMA50 + vela verde'; }
+  } else if (pullback.enZona && vela.esVerde) {
     if (vela.conCuerpo && volumen.superior) { senal = 'COMPRA_FUERTE'; razon = 'Pullback EMA20 + vela cuerpo + volumen'; }
-    else if (vela.conCuerpo)               { senal = 'COMPRA';        razon = 'Pullback EMA20 + vela verde con cuerpo'; }
-    else if (volumen.superior)             { senal = 'COMPRA';        razon = 'Pullback EMA20 + vela verde + volumen'; }
+    else if (vela.conCuerpo)               { senal = 'COMPRA';        razon = 'Pullback EMA20 + vela con cuerpo'; }
+    else if (volumen.superior)             { senal = 'COMPRA';        razon = 'Pullback EMA20 + vela + volumen'; }
     else                                   { senal = 'COMPRA_PARCIAL'; razon = 'Pullback EMA20 + vela verde'; }
-  }
-  // 3) PULLBACK ZONA EMA50 + CONFIRMACIÓN
-  else if (pullback50.enZona && vela.esVerde) {
+  } else if (pullback50.enZona && vela.esVerde) {
     if (vela.conCuerpo && volumen.superior) { senal = 'COMPRA';        razon = 'Pullback EMA50 + vela cuerpo + volumen'; }
     else                                    { senal = 'COMPRA_PARCIAL'; razon = 'Pullback EMA50 + vela verde'; }
-  }
-  // 4) PULLBACK ZONA EMA100 + CONFIRMACIÓN
-  else if (pullback100.enZona && vela.esVerde) {
-    senal = 'COMPRA_PARCIAL';
-    razon = 'Pullback EMA100 + vela verde';
-  }
-  // 5) ZONA EMA20 SIN CONFIRMACIÓN
-  else if (pullback.enZona && pullback.vieneDePullback) {
-    senal = 'VIGILAR_PULLBACK';
-    razon = `Zona EMA20 (${pullback.distancia.toFixed(2)}%), esperar vela verde`;
-  }
-  // 6) ZONA EMA50 SIN CONFIRMACIÓN
-  else if (pullback50.enZona) {
-    senal = 'VIGILAR_PULLBACK';
-    razon = `Zona EMA50 (${pullback50.distancia.toFixed(2)}%), esperar vela verde`;
-  }
-  // 7) EXTENDIDO BAJO EMA50
-  else if (extension50.extendido) {
-    senal = 'VIGILAR_REBOTE';
-    razon = `${extension50.distancia.toFixed(2)}% bajo EMA50, esperar rebote`;
-  }
-  else {
-    senal = 'MANTENER';
-    razon = 'En tendencia, sin pullback ni rotura';
+  } else if (pullback100.enZona && vela.esVerde) {
+    senal = 'COMPRA_PARCIAL'; razon = 'Pullback EMA100 + vela verde';
+  } else if (pullback.enZona && pullback.vieneDePullback) {
+    senal = 'VIGILAR_PULLBACK'; razon = `Zona EMA20 (${pullback.distancia.toFixed(2)}%), esperar vela`;
+  } else if (pullback50.enZona) {
+    senal = 'VIGILAR_PULLBACK'; razon = `Zona EMA50 (${pullback50.distancia.toFixed(2)}%), esperar vela`;
+  } else if (extension50.extendido) {
+    senal = 'VIGILAR_REBOTE'; razon = `${extension50.distancia.toFixed(2)}% bajo EMA50, esperar rebote`;
+  } else {
+    senal = 'MANTENER'; razon = 'En tendencia, sin pullback ni rotura';
   }
 
-  // ====== UPGRADE POR PATRÓN DE VELA ======
-  if (patron) {
+  // ====== UPGRADE POR PATRÓN (solo si RSC > 0 o RSC no disponible) ======
+  if (patron && (rscPositivo || rsc === null)) {
     const prev = senal;
     senal = subirSenal(senal);
     if (senal !== prev) razon = `${patron.nombre} → ${razon}`;
   }
 
+  // ====== FILTRO RSC — cap buys si RSC ≤ 0 ======
+  const COMPRAS = ['COMPRA_FUERTE', 'COMPRA', 'COMPRA_PARCIAL'];
+  if (rsc !== null && !rscPositivo) {
+    if (COMPRAS.includes(senal)) {
+      senal = 'MANTENER';
+      razon = `RSC ${rsc.valor.toFixed(2)} — sin liderazgo vs mercado`;
+    } else if (senal === 'VIGILAR_PULLBACK') {
+      senal = 'MANTENER';
+      razon = `RSC ${rsc.valor.toFixed(2)} — pullback sin atractivo`;
+    }
+  }
+
+  // ====== AJUSTE MACRO ROJO ======
+  if (macroRojo && COMPRAS.includes(senal)) {
+    const prev = senal;
+    if (senal === 'COMPRA_FUERTE')  senal = 'COMPRA';
+    else if (senal === 'COMPRA')    senal = 'COMPRA_PARCIAL';
+    else                            senal = 'VIGILAR_PULLBACK';
+    if (senal !== prev) razon = '🔴 Macro ROJO → ' + razon;
+  }
+
+  // ====== AJUSTE NASDAQ DÉBIL + TECH ======
+  if (nasdaqPena && COMPRAS.includes(senal)) {
+    const prev = senal;
+    if (senal === 'COMPRA_FUERTE')  senal = 'COMPRA';
+    else if (senal === 'COMPRA')    senal = 'COMPRA_PARCIAL';
+    else                            senal = 'VIGILAR_PULLBACK';
+    if (senal !== prev) razon = '📉 Nasdaq débil → ' + razon;
+  }
+
+  // ====== RSC PERDIÓ LIDERAZGO ======
+  if (rsc?.perdioLiderazgo) {
+    razon = '⚠️ PIERDE LIDERAZGO → ' + razon;
+  }
+
   return {
-    ticker: datos.ticker,
-    senal,
-    razon,
-    alertas,
+    ticker: datos.ticker, senal, razon, alertas,
     cantidadAlertas: alertas.length,
     detalles: {
-      precio:     datos.precio,
-      distEma20:  pullback.distancia   !== null ? pullback.distancia.toFixed(2)   + '%' : 'N/D',
-      distEma50:  extension50.distancia !== null ? extension50.distancia.toFixed(2) + '%' : 'N/D',
-      distEma100: pullback100.distancia !== null ? pullback100.distancia.toFixed(2) + '%' : 'N/D',
-      distEma200: pct(datos.precio, datos.ema200).toFixed(2) + '%',
-      stochRsi:   stochRsi.valor,
-      vela:       vela.esVerde ? (vela.conCuerpo ? 'VERDE_CUERPO' : 'VERDE') : 'ROJA',
+      precio:      datos.precio,
+      distEma20:   pullback.distancia    !== null ? pullback.distancia.toFixed(2)    + '%' : 'N/D',
+      distEma50:   extension50.distancia !== null ? extension50.distancia.toFixed(2) + '%' : 'N/D',
+      distEma100:  pullback100.distancia !== null ? pullback100.distancia.toFixed(2) + '%' : 'N/D',
+      distEma200:  pct(datos.precio, datos.ema200).toFixed(2) + '%',
+      stochRsi:    stochRsi.valor,
+      vela:        vela.esVerde ? (vela.conCuerpo ? 'VERDE_CUERPO' : 'VERDE') : 'ROJA',
       volumenRatio: volumen.ratio,
-      spxEstado:  spx.estado,
-      spxDist:    spx.distancia !== null ? spx.distancia.toFixed(2) + '%' : 'N/D',
-      patron:     patron ? patron.patron : null
+      spxEstado:   spx.estado,
+      spxDist:     spx.distancia !== null ? spx.distancia.toFixed(2) + '%' : 'N/D',
+      patron:      patron ? patron.patron : null,
+      rsc:         rsc?.valor ?? null,
+      rscSubiendo: rsc?.subiendo ?? null,
+      macroEstado: datos.macroEstado || null
     }
   };
 }
@@ -393,6 +441,7 @@ function ordenarPorFuerzaSenal(resultados) {
 module.exports = {
   evaluarActivo,
   ordenarPorFuerzaSenal,
+  calcularRSCMansfield,
   evaluarVela,
   evaluarVolumen,
   detectarPullbackEMA20,
