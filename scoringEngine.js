@@ -210,6 +210,32 @@ function evaluarActivo(datos) {
     return { ticker, senal: 'SIN_DATOS', alertas: [], cantidadAlertas: 0, razon: 'Datos insuficientes', detalles: null };
   }
 
+  // ── PASO 0: Precio extendido sobre TODAS las medias → MANTENER obligatorio ──
+  // Si el precio está más de 3% por encima de EMA20, WMA50 Y WMA100 simultáneamente
+  // no hay zona de soporte válida posible: el activo está en impulso, no en pullback.
+  const _d20  = isValid(datos.ema20)  ? (datos.precio - datos.ema20)  / datos.ema20  * 100 : -999;
+  const _d50  = isValid(datos.wma50)  ? (datos.precio - datos.wma50)  / datos.wma50  * 100 : -999;
+  const _d100 = isValid(datos.wma100) ? (datos.precio - datos.wma100) / datos.wma100 * 100 : -999;
+
+  if (_d20 > 3 && _d50 > 3 && _d100 > 3) {
+    return {
+      ticker, senal: 'MANTENER',
+      razon: `Precio extendido sobre todas las medias — EMA20:+${_d20.toFixed(1)}% WMA50:+${_d50.toFixed(1)}% WMA100:+${_d100.toFixed(1)}%`,
+      alertas: [], cantidadAlertas: 0,
+      detalles: {
+        precio: datos.precio, zonaActiva: null, enZona: false,
+        distEMA20:  _d20.toFixed(2)  + '%',
+        distWMA50:  _d50.toFixed(2)  + '%',
+        distWMA100: _d100.toFixed(2) + '%',
+        distEma200: isValid(datos.ema200) ? pct(datos.precio, datos.ema200).toFixed(2) + '%' : 'N/D',
+        stochRsi: datos.stochRsi, volumenRatio: datos.ratioVolumen,
+        pendienteEMA200: datos.pendienteEMA200, macroEstado: datos.macroEstado,
+        regimen: null, fuerza: null, pullbackReal: null,
+        pullbackRetroceso: null, pullbackVelasRojas: null, condiciones7: null
+      }
+    };
+  }
+
   // ── PASO 1: Hard veto EMA200 ───────────────────────────────────────────────
   if (datos.precio < datos.ema200) {
     const urgente = (datos.pendienteEMA200 || 0) < -0.05;
