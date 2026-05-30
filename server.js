@@ -542,7 +542,7 @@ async function fetchAndCalc(symbol) {
     pullbackVelasRojas:resultado.detalles?.pullbackVelasRojas ?? null,
     condiciones7:      resultado.detalles?.condiciones7      || null,
     zonaActiva:        resultado.detalles?.zonaActiva        || null,
-    senal:          resultado.senal,
+    senal:          validarCoherenciaSenal(resultado.senal, precio, ema20, wma50, wma100, symbol),
     razon:          resultado.razon || '',
     alertas:        resultado.alertas || [],
     cantidadAlertas:resultado.cantidadAlertas || 0,
@@ -591,6 +591,55 @@ async function updateAll() {
     }
   } finally {
     _updating = false;
+  }
+}
+
+// ── Validación de coherencia antes de guardar en MongoDB ──────────────────────
+// Barrera de seguridad: si el engine produce una señal de compra para un activo
+// extendido más del 3% sobre TODAS las medias, la corrige a MANTENER.
+
+function validarCoherenciaSenal(senal, precio, ema20, wma50, wma100, ticker) {
+  const COMPRAS = ['COMPRA_FUERTE', 'COMPRA', 'COMPRA_PARCIAL'];
+  if (!COMPRAS.includes(senal)) return senal;
+  if (!precio || !ema20 || !wma50 || !wma100) return senal;
+  const d20  = (precio - ema20)  / ema20  * 100;
+  const d50  = (precio - wma50)  / wma50  * 100;
+  const d100 = (precio - wma100) / wma100 * 100;
+  if (d20 > 3 && d50 > 3 && d100 > 3) {
+    console.warn(`[VALIDACIÓN] ${ticker}: ${senal} bloqueada — extendido +${d20.toFixed(1)}%/${d50.toFixed(1)}%/${d100.toFixed(1)}% → MANTENER`);
+    return 'MANTENER';
+  }
+  return senal;
+}
+
+// ── Limpieza de señales incorrectas en MongoDB al arrancar ────────────────────
+// Corrige documentos de StockData que tengan señales de compra pero precio
+// extendido sobre todas las medias (datos cacheados del motor anterior).
+
+async function limpiarSenalesIncorrectas() {
+  try {
+    const COMPRAS = ['COMPRA_FUERTE', 'COMPRA', 'COMPRA_PARCIAL'];
+    const docs = await StockData.find({ senal: { $in: COMPRAS } }).lean();
+    let fixed = 0;
+    for (const d of docs) {
+      if (!d.precio || !d.ema20 || !d.wma50 || !d.wma100) continue;
+      const d20  = (d.precio - d.ema20)  / d.ema20  * 100;
+      const d50  = (d.precio - d.wma50)  / d.wma50  * 100;
+      const d100 = (d.precio - d.wma100) / d.wma100 * 100;
+      if (d20 > 3 && d50 > 3 && d100 > 3) {
+        const razon = `Señal corregida al arrancar: extendido +${d20.toFixed(1)}%/${d50.toFixed(1)}%/${d100.toFixed(1)}% sobre todas las medias`;
+        await StockData.updateOne(
+          { symbol: d.symbol },
+          { $set: { senal: 'MANTENER', razon, zonaActiva: null, alertas: [], cantidadAlertas: 0 } },
+          { strict: false }
+        );
+        console.log(`[FIX] ${d.symbol}: ${d.senal} → MANTENER (EMA20:+${d20.toFixed(1)}% WMA50:+${d50.toFixed(1)}% WMA100:+${d100.toFixed(1)}%)`);
+        fixed++;
+      }
+    }
+    console.log(`[FIX] Limpieza completada: ${fixed} señales incorrectas corregidas`);
+  } catch (e) {
+    console.error('[FIX] Error en limpieza:', e.message);
   }
 }
 
@@ -789,6 +838,7 @@ app.listen(PORT, async () => {
   console.log(`\nPortfolio Monitor → http://localhost:${PORT}`);
   await connectDB();
   await seedPortfolio();
+  await limpiarSenalesIncorrectas();
   await updateAll();
   setInterval(updateAll, 30_000);
 });
